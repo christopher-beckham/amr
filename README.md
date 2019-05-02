@@ -41,9 +41,9 @@ To understand what each keyword argument is, simply run `python train.py --help`
 
 See paper.
 
-| Dataset       | Interpolations|
-| ------------- |:-------------:|
-| MNIST         | ![image](https://user-images.githubusercontent.com/2417792/57098483-3641b880-6ce8-11e9-9b46-3dbb71f0094b.png) |
+| Dataset       |# hidden units| Interpolations|
+| ------------- |:------------:|:-------------:|
+| MNIST         |32            | ![image](https://user-images.githubusercontent.com/2417792/57098483-3641b880-6ce8-11e9-9b46-3dbb71f0094b.png) |
 
 ## Troubleshooting
 
