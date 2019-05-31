@@ -3,7 +3,7 @@
 cd ..
 #source activate pytorch-env
 
-NAME=10_kmnist_acaif-mse_g16_frontal_bid_lamb2_inorm_32d_kyle_faithful_sn
+NAME=kmnist_acai-mse_lamb2
 python task_launcher.py \
 --model=acaif \
 --dataset=kmnist \

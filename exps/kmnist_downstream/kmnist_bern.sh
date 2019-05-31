@@ -3,7 +3,7 @@
 cd ..
 #source activate pytorch-env
 
-NAME=10_kmnist_mixupfm2_g16_frontal_bid_lamb10_inorm_32d_kyle_faithful_sn
+NAME=kmnist_bern
 python task_launcher.py \
 --dataset=kmnist \
 --arch=architectures/arch_acai_kyle.py \
