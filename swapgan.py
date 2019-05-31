@@ -14,7 +14,8 @@ class SwapGAN(Base):
                  lamb=1.0,
                  beta=1.0,
                  cls=1.0,
-                 sigma=0.0,
+                 sigma=None,
+                 dropout=None,
                  disable_g_recon=False,
                  disable_mix=False,
                  cls_loss='bce',
@@ -23,7 +24,9 @@ class SwapGAN(Base):
                  opt=optim.Adam,
                  opt_args={'lr': 0.0002, 'betas': (0.5, 0.999)},
                  update_g_every=1,
-                 classify_encoding=None,
+                 cls_enc=None,
+                 cls_enc_weight_decay=0.,
+                 cls_enc_backprop_grads=False,
                  handlers=[]):
         """
         :param generator: the autoencoding network. (Note that this network
@@ -36,7 +39,8 @@ class SwapGAN(Base):
         :param cls: if `cls` > 0, then the supervised mixing losses will be
           enabled. This is also the weight of the loss term that tries to
           fool the auxiliary classifier component of the discriminator.
-        :param sigma
+        :param sigma: TODO
+        :param dropout: TODO
         :param disable_g_recon: if `True`, disable the loss which tries to
           fool the discriminator with reconstructions. Note that it should
           be ok to disable this loss, since the discriminator-fooling mixing
@@ -55,19 +59,13 @@ class SwapGAN(Base):
         :param opt: optimiser from `torch.optim` class
         :param opt_args: a dictionary of kwargs to pass to the `opt` argument
         :param update_g_every: update G how many every iterations?
-        :param classify_encoding: this allows the user to train a classifier on
-          the bottleneck that is independent of the rest of the network (i.e. we
-          don't backpropagate into the autoencoder). This is either `None` or
-          a string of the form `p,k`, where `p` denotes the number of dimensions
-          in the bottleneck and `k` denotes the number of classes. For example,
-          if the bottleneck is of the dimension (64,2,2) and we have 10 classes,
-          you pass the string '256,10' (since 256=64*2*2).
+        :param cls_enc: TODO
         :returns: 
         :rtype: 
         """
 
         use_cuda = True if torch.cuda.is_available() else False
-        mix_types = ['mixup', 'mixup2', 'fm']
+        mix_types = ['mixup', 'mixup2', 'fm', 'fm2']
         if mixer not in mix_types:
             raise Exception("mixer must be either: " % (",".join(mix_types)))
         if cls > 0. and class_mixer is None:
@@ -78,7 +76,6 @@ class SwapGAN(Base):
         self.lamb = lamb
         self.beta = beta
         self.cls = cls
-        self.sigma = sigma
         self.eps = 1e-4
         self.disable_g_recon = disable_g_recon
         self.disable_mix = disable_mix
@@ -87,12 +84,18 @@ class SwapGAN(Base):
         print("beta = %f" % beta)
 
         if self.class_mixer is not None:
-            g_params = chain(self.generator.parameters(), self.class_mixer.parameters())
+            g_params = chain(self.generator.parameters(),
+                             self.class_mixer.parameters())
         else:
             g_params = self.generator.parameters()
         optim_g = opt(filter(lambda p: p.requires_grad, g_params), **opt_args)
         optim_disc_x = opt(filter(lambda p: p.requires_grad,
                                   self.disc_x.parameters()), **opt_args)
+
+        self.dropout = None
+        if sigma is not None:
+            self.dropout = nn.Dropout2d(sigma)
+
         self.optim = {
             'g': optim_g,
             'disc_x': optim_disc_x,
@@ -134,26 +137,35 @@ class SwapGAN(Base):
         # Classifier on the bottleneck (optional) #
         ###########################################
         self.cls_enc = None
-        if classify_encoding is not None:
-            cls_enc_n_in, cls_enc_k = classify_encoding
-            self.cls_enc = nn.Linear(cls_enc_n_in, cls_enc_k)
-            self.cls_enc_n_in = cls_enc_n_in
-            self.cls_enc_k = cls_enc_k
+        if cls_enc is not None:
+            # If cls_enc_backprop_grads is enabled, then
+            # we need the classifier optim class to update
+            # the weights of both the autoencoder and the
+            # classifier, so set that here.
+            if cls_enc_backprop_grads:
+                print("cls_enc_backprop_grads = True")
+                cls_enc_params = chain(cls_enc.parameters(),
+                                       self.generator.parameters())
+            else:
+                cls_enc_params = cls_enc.parameters()
+            # If necessary, add classifier-specific weight
+            # decay.
+            cls_opt_args = dict(opt_args) # copy
+            if cls_enc_weight_decay != 0:
+                cls_opt_args['weight_decay'] = cls_enc_weight_decay
             self.optim['cls_enc'] = opt(filter(lambda p: p.requires_grad,
-                                               self.cls_enc.parameters()), **opt_args)
-            from torch.optim.lr_scheduler import ExponentialLR
-            #self.cls_sched = ExponentialLR(self.optim['cls_enc'],
-            #                               gamma=0.995)
-            #self.schedulers.append(self.cls_sched)
+                                               cls_enc_params), **cls_opt_args)
             if self.use_cuda:
-                self.cls_enc.cuda()
+                cls_enc.cuda()
+            self.cls_enc = cls_enc
+            self.cls_enc_backprop_grads = cls_enc_backprop_grads
 
     def _get_stats(self, dict_, mode):
         stats = OrderedDict({})
         for key in dict_.keys():
             stats[key] = np.mean(dict_[key])
         return stats
-    
+
     def _train(self):
         self.generator.train()
         self.disc_x.train()
@@ -262,8 +274,41 @@ class SwapGAN(Base):
                 alphas[:, rnd_idxs] += 1.
         if self.use_cuda:
             alphas = alphas.cuda()
-        return alphas        
-    
+        return alphas
+
+    def sampler_fm2(self, bs, f, is_2d, p=None):
+        """Bernoulli mixup sampling function. Has
+          same expectation as fm but higher variance.
+
+        :param bs: batch size
+        :param f: number of features / channels
+        :param is_2d: should sampled alpha be 2D, instead of 4D?
+        :param p: Bernoulli parameter `p`. If this is `None`, then
+          we simply sample m ~ Bern(p), where p ~ U(0,1).
+        :returns: an alpha of shape (bs, f) if `is_2d`, otherwise
+          (bs, f, 1, 1).
+        :rtype: 
+
+        """
+        shp = (bs, f) if is_2d else (bs, f, 1, 1)
+        if p is None:
+            this_p = torch.rand(1).item()
+            alphas = torch.bernoulli(torch.zeros(shp)+this_p).float()
+        else:
+            rnd_state = np.random.RandomState(0)
+            rnd_idxs = np.arange(0, f)
+            rnd_state.shuffle(rnd_idxs)
+            rnd_idxs = torch.from_numpy(rnd_idxs)
+            how_many = int(p*f)
+            alphas = torch.zeros(shp).float()
+            if how_many > 0:
+                rnd_idxs = rnd_idxs[0:how_many]
+                alphas[:, rnd_idxs] += 1.
+        if self.use_cuda:
+            alphas = alphas.cuda()
+        return alphas
+
+
     def sampler(self, bs, f, is_2d, **kwargs):
         """Sampler function, which outputs an alpha which
         you can use to produce a convex combination between
@@ -283,7 +328,9 @@ class SwapGAN(Base):
             return self.sampler_mixup2(bs, f, is_2d, **kwargs)
         elif self.mixer == 'fm':
             return self.sampler_fm(bs, f, is_2d, **kwargs)
-
+        elif self.mixer == 'fm2':
+            return self.sampler_fm2(bs, f, is_2d, **kwargs)
+        
     def sample(self, x_batch):
         """Output a random mixup sample.
 
@@ -321,7 +368,7 @@ class SwapGAN(Base):
             enc = self.generator.encode(x_batch)
             dec = self.generator.decode(enc)
             return dec
-        
+
     def train_on_instance(self,
                           x_batch,
                           y_batch,
@@ -329,17 +376,13 @@ class SwapGAN(Base):
         self._train()
         for key in self.optim:
             self.optim[key].zero_grad()
-            
+
         ## ------------------
         ## Generator training
         ## ------------------
         enc = self.generator.encode(x_batch)
-        if self.sigma > 0:
-            noise = torch.zeros_like(enc).normal_(0, self.sigma)
-            if self.use_cuda:
-                noise = noise.cuda()
-        else:
-            noise = 0.
+        if self.dropout is not None:
+            enc = self.dropout(enc)
         perm = torch.randperm(x_batch.size(0))
         dec_enc = self.generator.decode(enc)
         recon_loss = torch.mean(torch.abs(dec_enc-x_batch))
@@ -347,10 +390,15 @@ class SwapGAN(Base):
         is_2d = True if len(enc.size()) == 2 else False
         alpha = self.sampler(x_batch.size(0), enc.size(1), is_2d)
         enc_mix = alpha*enc + (1.-alpha)*enc[perm]
-        dec_enc_mix = self.generator.decode(enc_mix+noise)
+        dec_enc_mix = self.generator.decode(enc_mix)
         disc_g_mix_loss = self.gan_loss_fn(self.disc_x(dec_enc_mix)[0], 1)
-        consist_loss = torch.mean(torch.abs(self.generator.encode(dec_enc_mix)-enc_mix))
-       
+        if self.beta > 0:
+            consist_loss = torch.mean(torch.abs(self.generator.encode(dec_enc_mix)-enc_mix))
+        else:
+            consist_loss = torch.FloatTensor([0.])
+            if self.use_cuda:
+                consist_loss = consist_loss.cuda()
+
         gen_loss = self.lamb*recon_loss
         if self.disable_g_recon is False:
             gen_loss = gen_loss + disc_g_recon_loss
@@ -378,11 +426,11 @@ class SwapGAN(Base):
                        self.eps * h_mask_prior
             with torch.no_grad():
                 h_mask_loss = torch.mean((h_mask.sum(dim=1).mean()))
-            
+
         if (kwargs['iter']-1) % self.update_g_every == 0:
-            gen_loss.backward()
+            gen_loss.backward(retain_graph=True if self.cls_enc_backprop_grads else False)
             self.optim['g'].step()
-           
+
         ## ----------------------
         ## Discriminator on image
         ## ----------------------
@@ -404,7 +452,7 @@ class SwapGAN(Base):
                 # Do supervised mixes.
                 d_out_sup_mix = self.gan_loss_fn(self.disc_x(dec_enc_sup_mix.detach())[0], 0)
                 d_losses.append(d_out_sup_mix)
-            
+
         d_x = sum(d_losses)
         disc_loss = d_x
         if self.cls > 0.:
@@ -417,19 +465,10 @@ class SwapGAN(Base):
         ## Classifier on bottleneck (NOTE: for debugging)
         ## ----------------------------------------------
         if self.cls_enc is not None:
-            self.optim['cls_enc'].zero_grad()
-            enc_flat = enc.detach().view(-1, self.cls_enc_n_in)
-            cls_enc_out = self.cls_enc(enc_flat)
-            cls_enc_preds_log = torch.log_softmax(cls_enc_out, dim=1)
-            cls_enc_loss = nn.NLLLoss()(cls_enc_preds_log,
-                                        y_batch.argmax(dim=1).long())
-            with torch.no_grad():
-                cls_enc_preds = torch.softmax(cls_enc_out, dim=1)
-                cls_enc_acc = (cls_enc_preds.argmax(dim=1) == y_batch.argmax(dim=1).long()).float().mean()
-            
-            cls_enc_loss.backward()
-            self.optim['cls_enc'].step()
-                        
+            if self.cls_enc_backprop_grads is False:
+                enc = enc.detach()
+            cls_enc_losses = self.train_classifier_on_instance(enc, y_batch)
+
         losses = {
             'gen_loss': gen_loss.item(),
             'disc_g_recon': disc_g_recon_loss.item(),
@@ -449,8 +488,8 @@ class SwapGAN(Base):
             losses['z1_acc'] = z1_acc.item()
             losses['z1_base_acc'] = z1_base_acc.item()
         if self.cls_enc is not None:
-            losses['cls_enc_loss'] = cls_enc_loss.item()
-            losses['cls_enc_acc'] = cls_enc_acc.item()
+            losses['cls_enc_loss'] = cls_enc_losses['cls_enc_loss']
+            losses['cls_enc_acc'] = cls_enc_losses['cls_enc_acc']
         outputs = {
             'recon': dec_enc,
             'mix': dec_enc_mix,
@@ -459,6 +498,31 @@ class SwapGAN(Base):
         }
         return losses, outputs
 
+    def train_classifier_on_instance(self,
+                                     enc,
+                                     y_batch):
+        self.optim['cls_enc'].zero_grad()
+
+        if hasattr(self.cls_enc, 'legacy'):
+            enc_flat = enc.view(-1, self.cls_enc.n_in)
+        else:
+            enc_flat = enc
+        cls_enc_out = self.cls_enc(enc_flat)
+        cls_enc_preds_log = torch.log_softmax(cls_enc_out, dim=1)
+        cls_enc_loss = nn.NLLLoss()(cls_enc_preds_log,
+                                    y_batch.argmax(dim=1).long())
+        with torch.no_grad():
+            cls_enc_preds = torch.softmax(cls_enc_out, dim=1)
+            cls_enc_acc = (cls_enc_preds.argmax(dim=1) == y_batch.argmax(dim=1).long()).float().mean()
+        cls_enc_loss.backward()
+
+        self.optim['cls_enc'].step()
+
+        return {
+            'cls_enc_loss': cls_enc_loss.item(),
+            'cls_enc_acc': cls_enc_acc.item()
+        }
+
     def eval_on_instance(self,
                          x_batch,
                          y_batch,
@@ -466,6 +530,8 @@ class SwapGAN(Base):
         self._eval()
         with torch.no_grad():
             enc = self.generator.encode(x_batch)
+            if self.dropout is not None:
+                enc = self.dropout(enc)
             perm = torch.randperm(x_batch.size(0))
             dec_enc = self.generator.decode(enc)
             is_2d = True if len(enc.size()) == 2 else False
@@ -482,20 +548,32 @@ class SwapGAN(Base):
                 losses['z1_base_acc'] = z1_base_acc.item()
 
             if self.cls_enc is not None:
-                enc_flat = enc.detach().view(-1, self.cls_enc_n_in)
-                cls_enc_out = self.cls_enc(enc_flat)
-                cls_enc_preds = torch.softmax(cls_enc_out, dim=1)
-                cls_enc_acc = (cls_enc_preds.argmax(dim=1) == y_batch.argmax(dim=1).long()).float().mean()
-                losses['cls_enc_Acc'] = cls_enc_acc.item()
-                
+                cls_enc_losses = self.eval_classifier_on_instance(enc,
+                                                                  y_batch)
+                losses['cls_enc_acc'] = cls_enc_losses['cls_enc_acc']
+
             outputs = {
                 'recon': dec_enc,
                 'mix': dec_enc_mix,
                 'perm': perm,
                 'input': x_batch,
             }
-                
+
         return losses, outputs
+
+    def eval_classifier_on_instance(self,
+                                    enc,
+                                    y_batch):
+        if hasattr(self.cls_enc, 'legacy'):
+            enc_flat = enc.view(-1, self.cls_enc.n_in)
+        else:
+            enc_flat = enc
+        cls_enc_out = self.cls_enc(enc_flat)
+        cls_enc_preds = torch.softmax(cls_enc_out, dim=1)
+        cls_enc_acc = (cls_enc_preds.argmax(dim=1) == y_batch.argmax(dim=1).long()).float().mean()
+        return {
+            'cls_enc_acc': cls_enc_acc.item()
+        }
 
     def prepare_batch(self, batch):
         if len(batch) != 2:

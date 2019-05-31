@@ -578,7 +578,8 @@ def save_interp_supervised(gan, x_batch, y_batch,
                            out_folder,
                            num=10,
                            padding=2,
-                           overlay_attrs=True):
+                           overlay_attrs=True,
+                           enumerate_all=True):
     gan._eval()
     if not os.path.exists(out_folder):
         os.makedirs(out_folder)
@@ -587,6 +588,12 @@ def save_interp_supervised(gan, x_batch, y_batch,
     padding = 0 if overlay_attrs else padding
     img_sz = None
     y_combinations = []
+
+    def _rand_sample(ys):
+        arr = []
+        for i in range(len(ys)):
+            arr.append(np.random.choice(ys[i]))
+        return arr
     
     with torch.no_grad():
         if gan.use_cuda:
@@ -603,15 +610,20 @@ def save_interp_supervised(gan, x_batch, y_batch,
             print("Iteration: %i" % i)
             print("  this_y1 = ", this_y1)
             print("  this_y2 = ", this_y2)
+            print("  sum(this_y1) =", sum(this_y1))
+            print("  sum(this_y2) =", sum(this_y2))            
             # Produce all possible binary combinations between
             # this_y1 and this_y2.
             this_y_stacked = torch.stack((this_y1, this_y2))
             this_y_cols = [this_y_stacked[:,j].tolist() for j in range(len(this_y1))]
-            # Get all combinations and then run it through a set to remove duplicates.
-            this_all_combinations = set([elem for elem in itertools.product(*this_y_cols)])
-            # Now sort the thing.
-            this_all_combinations = sorted(this_all_combinations)
-            print("  all_combinations = ", this_all_combinations)
+            if enumerate_all:
+                # Get all combinations and then run it through a set to remove duplicates.
+                this_all_combinations = set([elem for elem in itertools.product(*this_y_cols)])
+                # Now sort the thing.
+                this_all_combinations = sorted(this_all_combinations)
+            else:
+                this_all_combinations = sorted(set([ tuple(_rand_sample(this_y_cols)) for _ in range(20) ]))
+            print("  tot combinations found = %i" % len(this_all_combinations))
             # Produce y_mix
             y_mix = torch.FloatTensor(this_all_combinations)
             if x_batch.is_cuda:

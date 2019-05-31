@@ -18,7 +18,10 @@ def Initializer(layers, slope=0.2):
         if hasattr(layer, 'bias'):
             layer.bias.data.zero_()
 
-def Encoder(scales, depth, latent, colors, instance_norm=False, spec_norm=False):
+def Encoder(scales, depth, latent, colors,
+            instance_norm=False,
+            spec_norm=False,
+            dropout=None):
     if spec_norm is False:
         sn = lambda x: x
     else:
@@ -42,6 +45,8 @@ def Encoder(scales, depth, latent, colors, instance_norm=False, spec_norm=False)
     else:
         layers.extend([sn(nn.Conv2d(kp, k, 3, padding=1)), activation()])
     layers.append(sn(nn.Conv2d(k, latent, 3, padding=1)))
+    if dropout is not None:
+        layers.append(nn.Dropout2d(dropout))
     Initializer(layers)
     return nn.Sequential(*layers)
 
@@ -101,3 +106,19 @@ class Discriminator(nn.Module):
         x = x.reshape(x.shape[0], -1)
         x = torch.mean(x, -1)
         return torch.sigmoid(x), None
+
+
+from torch.nn import functional as F
+
+class DiscriminatorSoftmax(nn.Module):
+    def __init__(self, scales, depth, latent, latent_width, colors):
+        super().__init__()
+        self.encoder = Encoder(scales, depth, latent, colors,
+                               spec_norm=True)
+        self.fc = nn.Linear(latent*(latent_width**2), 2)
+        
+    def forward(self, x):
+        x = self.encoder(x)
+        x = x.reshape(x.shape[0], -1)
+        x = self.fc(x) # (bs,2)
+        return F.log_softmax(x), None

@@ -75,7 +75,10 @@ class ACAI(SwapGAN):
         ## ----------------------------------------------
         if self.cls_enc is not None:
             self.optim['cls_enc'].zero_grad()
-            enc_flat = enc.detach().view(-1, self.cls_enc_n_in)
+            if hasattr(self.cls_enc, 'legacy'):
+                enc_flat = enc.detach().view(-1, self.cls_enc.n_in)
+            else:
+                enc_flat = enc.detach()
             cls_enc_out = self.cls_enc(enc_flat)
             cls_enc_preds_log = torch.log_softmax(cls_enc_out, dim=1)
             cls_enc_loss = nn.NLLLoss()(cls_enc_preds_log,
@@ -122,7 +125,10 @@ class ACAI(SwapGAN):
             
             losses = {}
             if self.cls_enc is not None:
-                enc_flat = enc.detach().view(-1, self.cls_enc_n_in)
+                if hasattr(self.cls_enc, 'legacy'):
+                    enc_flat = enc.detach().view(-1, self.cls_enc.n_in)
+                else:
+                    enc_flat = enc.detach()
                 cls_enc_out = self.cls_enc(enc_flat)
                 cls_enc_preds = torch.softmax(cls_enc_out, dim=1)
                 cls_enc_acc = (cls_enc_preds.argmax(dim=1) == y_batch.argmax(dim=1).long()).float().mean()
