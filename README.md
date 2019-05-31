@@ -75,13 +75,19 @@ these lines to the script:
 What if we wanted to turn this model into AMR? Easy! Simply remove `--disable_mix` and now we have AMR with the mixup function. If we change
 `--mixer=mixup` to `--mixer=fm2`, then we have AMR with Bernoulli mixup. For mixing in triplets, simply add `--model=threegan`.
 
+### Evaluating samples
+
+This also easy! Simply add `--mode=interp_train` (or `--mode=interp_valid`) to the script. This changes the mode in the task launcher script
+from training (which is the default) to interpolation mode. In this mode, interpolations between samples will be produced and output in the
+results folder. The number of samples used for interpolation is dependent on `--val_batch_size`.
+
 ## Notes
 
 - The main architecture we use here is one derived from a PyTorch reimplementation of ACAI, courtesy of Kyle McDonald, whose implementation can be found here: https://gist.github.com/kylemcdonald/e8ca989584b3b0e6526c0a737ed412f0
   - The main changes we make is that we add spectral norm to the discriminator to stabilise GAN training. We also added instance norm to the generator to stabilise training.
   - Generator code: https://github.com/christopher-beckham/amr/blob/dev/architectures/arch_kyle.py#L21-L96
   - Discriminator code: https://github.com/christopher-beckham/amr/blob/dev/architectures/arch_kyle.py#L98-L108
-
+- ACAI's regularisation term has not been implemented, so it's not a completely faithful reproduction of their model. We will address this issue.
 
 ## Troubleshooting
 
