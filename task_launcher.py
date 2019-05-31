@@ -15,8 +15,7 @@ from iterators.datasets import (CelebADataset,
                                 MnistDatasetOneHot,
                                 MnistDataset012,
                                 KMnistDatasetOneHot,
-                                SvhnDatasetOneHot,
-                                OxfordFlowers102Dataset)
+                                SvhnDatasetOneHot)
 from torchvision import datasets
 from torchvision.transforms import transforms
 from PIL import Image
@@ -72,6 +71,7 @@ def get_model(ngf, norm_layer, cpt=None, use_cuda=True):
     gen.eval()
     return gen
 
+"""
 from classifier import Classifier
 from architectures.classifier import ResNetCelebA
 
@@ -95,6 +95,7 @@ def get_classifier(mode='fid'):
         cls = cls.classifier
         cls.eval()
     return cls
+"""
 
 if __name__ == '__main__':
 
