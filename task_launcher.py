@@ -23,12 +23,12 @@ from PIL import Image
 from torchvision.utils import save_image
 from swapgan import SwapGAN
 #from swapgan_pair import PairSwapGAN
-from amr_classifier import ClassifierOnly
-from acai import ACAI
+#from amr_classifier import ClassifierOnly
+#from acai import ACAI
 from acai_f import ACAIF
-from acai_softmax import ACAI_Softmax
+#from acai_softmax import ACAI_Softmax
 from threegan import ThreeGAN
-from pixel_arae import PixelARAE
+#from pixel_arae import PixelARAE
 from functools import partial
 from importlib import import_module
 from tools import (generate_tsne,

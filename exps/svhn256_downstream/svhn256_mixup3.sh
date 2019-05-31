@@ -28,6 +28,4 @@ python task_launcher.py \
 --weight_decay=1e-5 \
 --beta1=0.5 \
 --beta2=0.99 \
---lr=1e-4 \
---mode=interp_train \
---mode_override='show_real=1,num_interps=20'
+--lr=1e-4
