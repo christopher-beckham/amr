@@ -1,5 +1,7 @@
 # Adversarial mixup resynthesizers
 
+<img src="https://github.com/christopher-beckham/amr/raw/dev/figures/mixup_anim.gif" /> <img src="https://github.com/christopher-beckham/amr/raw/dev/figures/mixup3_anim.gif" /> <img src="https://github.com/christopher-beckham/amr/raw/dev/figures/fm_anim.gif" />
+
 In this paper, we explore new approaches to combining information encoded within the learned representations of autoencoders. We explore models that are capable of combining the attributes of multiple inputs such that a resynthesised output is trained to fool an adversarial discriminator for real versus synthesised data. Furthermore, we explore the use of such an architecture in the context of semi-supervised learning, where we learn a mixing function whose objective is to produce interpolations of hidden states, or masked combinations of latent representations that are consistent with a conditioned class label. We show quantitative and qualitative evidence that such a formulation is an interesting avenue of research.
 
 <img src="https://github.com/christopher-beckham/amr/raw/dev/figures/model.png" width=768px />
