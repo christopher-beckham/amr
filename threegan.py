@@ -6,10 +6,40 @@ from itertools import chain
 from swapgan import SwapGAN
 from torch import nn
 
-class ACAI(SwapGAN):
+from torch.distributions import Dirichlet
+
+class ThreeGAN(SwapGAN):
 
     def __init__(self, *args, **kwargs):
-        super(ACAI, self).__init__(*args, **kwargs)
+        super(ThreeGAN, self).__init__(*args, **kwargs)
+        self.dirichlet = Dirichlet(torch.FloatTensor([1.0, 1.0, 1.0]))
+
+    def sampler(self, bs, f, is_2d, **kwargs):
+        """Sampler function, which outputs an alpha which
+        you can use to produce a convex combination between
+        two examples.
+
+        :param bs: batch size
+        :param f: number of units / feature maps at encoding
+        :param is_2d: is the bottleneck a 2d tensor?
+        :returns: an alpha of shape `(bs, f)` is `is_2d` is set,
+          otherwise `(bs, f, 1, 1)`.
+        :rtype: 
+
+        """
+        if self.mixer == 'mixup':
+            alpha = self.dirichlet.sample_n(bs)
+        elif self.mixer == 'fm':
+            #alpha = torch.randint(0, 3, size=(bs, f, 1, 1)).long()
+            alpha = torch.zeros((bs, 3, f)).float()
+            for b in range(bs):
+                for j in range(alpha.shape[2]):
+                    alpha[b, np.random.randint(0, alpha.shape[1]), j] = 1.            
+        else:
+            raise Exception("Not implemented for mixup scheme: %s" % self.mixer)
+        if self.use_cuda:
+            alpha = alpha.cuda()
+        return alpha
         
     def train_on_instance(self,
                           x_batch,
@@ -25,16 +55,33 @@ class ACAI(SwapGAN):
         enc = self.generator.encode(x_batch)
         dec_enc = self.generator.decode(enc)
         recon_loss = torch.mean(torch.abs(dec_enc-x_batch))
-        #disc_g_recon_loss = self.gan_loss_fn(self.disc_x(dec_enc)[0], 0)
+        disc_g_recon_loss = self.gan_loss_fn(self.disc_x(dec_enc)[0], 1)
         perm = torch.randperm(x_batch.size(0))
+        perm2 = torch.randperm(x_batch.size(0))
         is_2d = True if len(enc.size()) == 2 else False
         alpha = self.sampler(x_batch.size(0), enc.size(1), is_2d)
-        enc_mix = alpha*enc + (1.-alpha)*enc[perm]
-        dec_enc_mix = self.generator.decode(enc_mix)
-        disc_g_mix_loss = self.gan_loss_fn(self.disc_x(dec_enc_mix)[0], 0)
-        consist_loss = torch.mean(torch.abs(self.generator.encode(dec_enc_mix)-enc_mix))
 
+        if self.mixer == 'mixup':
+            enc_mix = alpha[:, 0].view(x_batch.size(0), 1, 1, 1)*enc + \
+                      alpha[:, 1].view(x_batch.size(0), 1, 1, 1)*enc[perm] + \
+                      alpha[:, 2].view(x_batch.size(0), 1, 1, 1)*enc[perm2]
+        else:
+            enc_mix = alpha[:, 0].view(x_batch.size(0), enc.size(1), 1, 1)*enc + \
+                      alpha[:, 1].view(x_batch.size(0), enc.size(1), 1, 1)*enc[perm] + \
+                      alpha[:, 2].view(x_batch.size(0), enc.size(1), 1, 1)*enc[perm2]
+        
+        dec_enc_mix = self.generator.decode(enc_mix)
+        disc_g_mix_loss = self.gan_loss_fn(self.disc_x(dec_enc_mix)[0], 1)
+        if self.beta > 0:
+            consist_loss = torch.mean(torch.abs(self.generator.encode(dec_enc_mix)-enc_mix))
+        else:
+            consist_loss = torch.FloatTensor([0.])
+            if self.use_cuda:
+                consist_loss = consist_loss.cuda()
+        
         gen_loss = self.lamb*recon_loss
+        if self.disable_g_recon is False:
+            gen_loss = gen_loss + disc_g_recon_loss
         if self.disable_mix is False:
             gen_loss = gen_loss + disc_g_mix_loss + self.beta*consist_loss
                 
@@ -48,24 +95,17 @@ class ACAI(SwapGAN):
         self.optim['disc_x'].zero_grad()
         d_losses = []
         # Do real images.
-        dx_out, _ = self.disc_x(x_batch)
-        d_x_real = self.gan_loss_fn(dx_out, 0)
-        # Do fake imagees.
-        if self.mixer == 'mixup':
-            alpha_reshp = alpha
-        elif self.mixer == 'mixup2':
-            # 'mixup2' does both batch + channel axis so we
-            # just need to do a view() op.
-            alpha_reshp = alpha.view(-1, enc.size(1))
-        elif self.mixer == 'fm':
-            alpha_reshp = alpha.view(-1, enc.size(1))
-        d_x_fake = self.gan_loss_fn(self.disc_x(dec_enc_mix.detach())[0],
-                                    alpha_reshp)
-        # Not sure how to label reconstructions in this formulation,
-        # so the D loss is simply real vs (interp = fake), rather than
-        # real vs (interps + recon = fake)
+        dx_out, cx_out = self.disc_x(x_batch)
+        d_x_real = self.gan_loss_fn(dx_out, 1)
         d_losses.append(d_x_real)
-        d_losses.append(d_x_fake)
+        if self.disable_g_recon is False:
+            # Do reconstruction.
+            d_x_fake = self.gan_loss_fn(self.disc_x(dec_enc.detach())[0], 0)
+            d_losses.append(d_x_fake)
+        if self.disable_mix is False:
+            # Do mixes.
+            d_out_mix = self.gan_loss_fn(self.disc_x(dec_enc_mix.detach())[0], 0)
+            d_losses.append(d_out_mix)
         d_x = sum(d_losses)
         d_x.backward()
         self.optim['disc_x'].step()
@@ -92,6 +132,7 @@ class ACAI(SwapGAN):
                         
         losses = {
             'gen_loss': gen_loss.item(),
+            'disc_g_recon': disc_g_recon_loss.item(),
             'disc_g_mix': disc_g_mix_loss.item(),
             'recon': recon_loss.item(),
             'consist': consist_loss.item(),
@@ -116,11 +157,21 @@ class ACAI(SwapGAN):
         self._eval()
         with torch.no_grad():
             enc = self.generator.encode(x_batch)
-            perm = torch.randperm(x_batch.size(0))
-            is_2d = True if len(enc.size()) == 2 else False
             dec_enc = self.generator.decode(enc)
+            recon_loss = torch.mean(torch.abs(dec_enc-x_batch))
+            #disc_g_recon_loss = self.gan_loss_fn(self.disc_x(dec_enc)[0], 0)
+            perm = torch.randperm(x_batch.size(0))
+            perm2 = torch.randperm(x_batch.size(0))
+            is_2d = True if len(enc.size()) == 2 else False
             alpha = self.sampler(x_batch.size(0), enc.size(1), is_2d)
-            enc_mix = alpha*enc + (1.-alpha)*enc[perm]
+            if self.mixer == 'mixup':
+                enc_mix = alpha[:, 0].view(x_batch.size(0), 1, 1, 1)*enc + \
+                          alpha[:, 1].view(x_batch.size(0), 1, 1, 1)*enc[perm] + \
+                          alpha[:, 2].view(x_batch.size(0), 1, 1, 1)*enc[perm2]
+            else:
+                enc_mix = alpha[:, 0].view(x_batch.size(0), enc.size(1), 1, 1)*enc + \
+                          alpha[:, 1].view(x_batch.size(0), enc.size(1), 1, 1)*enc[perm] + \
+                          alpha[:, 2].view(x_batch.size(0), enc.size(1), 1, 1)*enc[perm2]
             dec_enc_mix = self.generator.decode(enc_mix)
             
             losses = {}

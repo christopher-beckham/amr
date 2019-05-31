@@ -33,15 +33,14 @@ for i in $baseline $mixup $bern $gan3f $gan3fmf $acai_lamb2 $acai_mse_lamb2; do 
     # Copy from CC server.
     cp ${cc_dir}/mnist32_downstream_kyle/$src $dst_dir/$dst
   fi
-  #sed -i "/NAME/c\NAME=${dst}" $dst_dir/$dst
   # Quick script to replace NAME= in the bash script.
-  #dst_stripped=${dst::-3}
-  #python util/replace_line.py \
-  #  $dst_dir/$dst \
-  #  "NAME=" \
-  #  "NAME=${dst_stripped}" > $dst_dir/$dst.fixed
-  #rm $dst_dir/$dst
-  #mv $dst_dir/$dst.fixed $dst_dir/$dst
+  dst_stripped="${dst:0:${#dst}-3}"
+  python util/replace_line.py \
+    $dst_dir/$dst \
+    "NAME=" \
+    "NAME=${dst_stripped}" > $dst_dir/$dst.fixed
+  rm $dst_dir/$dst
+  mv $dst_dir/$dst.fixed $dst_dir/$dst
 done
 
 

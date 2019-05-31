@@ -3,7 +3,7 @@
 cd ..
 #source activate pytorch-env
 
-NAME=10_mnist_3ganfm-f_g16_frontal_bid_lamb10_inorm_32d_kyle_faithful_sn
+NAME=mnist_bern3
 python task_launcher.py \
 --model=threegan \
 --dataset=mnist \

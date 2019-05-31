@@ -3,7 +3,7 @@
 cd ..
 #source activate pytorch-env
 
-NAME=10_mnist_baseline_g16_frontal_bid_lamb10_inorm_32d_kyle_faithful
+NAME=mnist_baseline
 python task_launcher.py \
 --dataset=mnist \
 --arch=architectures/arch_acai_kyle.py \
@@ -14,7 +14,6 @@ python task_launcher.py \
 --ngf=0 \
 --ndf=0 \
 --name=${NAME} \
---data_dir=/tmp/beckhamc/img_align_celeba \
 --batch_size=16 \
 --beta=0.0 \
 --lamb=10.0 \
@@ -23,7 +22,8 @@ python task_launcher.py \
 --mixer=mixup \
 --disable_mix \
 --seed=1 \
---classify_encoding='32,10' \
+--cls_probe=architectures/cls_probes/linear_legacy.py \
+--cls_probe_args="{'n_in': 32, 'n_classes':10}" \
 --weight_decay=1e-5 \
 --beta1=0.5 \
 --beta2=0.99 \
