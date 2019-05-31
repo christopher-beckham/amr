@@ -2,7 +2,7 @@
 
 In this paper, we explore new approaches to combining information encoded within the learned representations of autoencoders. We explore models that are capable of combining the attributes of multiple inputs such that a resynthesised output is trained to fool an adversarial discriminator for real versus synthesised data. Furthermore, we explore the use of such an architecture in the context of semi-supervised learning, where we learn a mixing function whose objective is to produce interpolations of hidden states, or masked combinations of latent representations that are consistent with a conditioned class label. We show quantitative and qualitative evidence that such a formulation is an interesting avenue of research.
 
-<img src="https://user-images.githubusercontent.com/2417792/57037002-ef8a8a80-6c23-11e9-9ecd-51582cd91258.png" width=768px />
+<img src="https://github.com/christopher-beckham/amr/raw/dev/figures/model.png" width=768px />
 
 ## Setting up the project
 
@@ -57,7 +57,7 @@ python task_launcher.py                  \
 --cls=0.0                                `# we're not doing supervised mixes`\
 --disable_mix                            `# disable mixup -- this reduces the class into an adversarial AE`\
 --mixer=mixup                            `# mixing func -- ignored due to disable_mix above`\
---seed=``                                `# if seed is e.g. s1, then the experiment is saved in results/s1`\
+--seed=1                                 `# if seed is e.g. s1, then the experiment is saved in results/s1`\
 --weight_decay=1e-5                      `# L2 norm on the weights`\
 --beta1=0.5                              `# beta1 for ADAM optimiser`\
 --beta2=0.99                             `# beta2 for ADAM optimiser`\
@@ -73,9 +73,14 @@ these lines to the script:
 ```
 
 What if we wanted to turn this model into AMR? Easy! Simply remove `--disable_mix` and now we have AMR with the mixup function. If we change
-`--mixer=mixup` to `--mixer=fm2`, then we have AMR with Bernoulli mixup.
+`--mixer=mixup` to `--mixer=fm2`, then we have AMR with Bernoulli mixup. For mixing in triplets, simply add `--model=threegan`.
 
 ## Notes
+
+- The main architecture we use here is one derived from a PyTorch reimplementation of ACAI, courtesy of Kyle McDonald, whose implementation can be found here: https://gist.github.com/kylemcdonald/e8ca989584b3b0e6526c0a737ed412f0
+  - The main changes we make is that we add spectral norm to the discriminator to stabilise GAN training. We also added instance norm to the generator to stabilise training.
+  - Generator code: https://github.com/christopher-beckham/amr/blob/dev/architectures/arch_kyle.py#L21-L96
+  - Discriminator code: https://github.com/christopher-beckham/amr/blob/dev/architectures/arch_kyle.py#L98-L108
 
 
 ## Troubleshooting

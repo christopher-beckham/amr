@@ -158,7 +158,7 @@ class SwapGAN(Base):
             if self.use_cuda:
                 cls_enc.cuda()
             self.cls_enc = cls_enc
-            self.cls_enc_backprop_grads = cls_enc_backprop_grads
+        self.cls_enc_backprop_grads = cls_enc_backprop_grads
 
     def _get_stats(self, dict_, mode):
         stats = OrderedDict({})
