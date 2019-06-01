@@ -90,6 +90,7 @@ results folder. The number of samples used for interpolation is dependent on `--
   - Generator code: https://github.com/christopher-beckham/amr/blob/dev/architectures/arch_kyle.py#L21-L96
   - Discriminator code: https://github.com/christopher-beckham/amr/blob/dev/architectures/arch_kyle.py#L98-L108
 - ACAI's regularisation term has not been implemented, so it's not a completely faithful reproduction of their model. We will address this issue.
+- Having batch norm in the generator appears to generate funky artifacts (or at least it was the case on our qualitative experiments on CelebA/Zappos in the paper). Instead we opted for instance norm.
 
 ## Troubleshooting
 
