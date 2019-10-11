@@ -72,8 +72,17 @@ def Decoder(scales, depth, latent, colors, instance_norm=False):
     return nn.Sequential(*layers)
 
 class EncoderDecoder(nn.Module):
-    def __init__(self, scales, n_channels, depth, latent):
+    def __init__(self,
+                 width,
+                 latent_width,
+                 n_channels,
+                 depth,
+                 latent):
+        """
+        n_h: number of hidden units for FC layer
+        """
         super(EncoderDecoder, self).__init__()
+        scales = int(round(math.log(width // latent_width, 2)))
         encoder = Encoder(scales,
                           depth,
                           latent,
@@ -86,21 +95,28 @@ class EncoderDecoder(nn.Module):
                           instance_norm=True)
         self.encoder = encoder
         self.decoder = decoder
+        self.use_fc = False
+        self.latent_width = latent_width
+        self.latent = latent
     def forward(self, x):
         enc = self.encoder(x)
         dec = self.decoder(enc)
         return dec
     def encode(self, x):
-        return self.encoder(x)
+        enc = self.encoder(x)
+        return enc
     def decode(self, x):
-        return self.decoder(x)
+        dec = x
+        dec = self.decoder(dec)
+        return dec
 
 class Discriminator(nn.Module):
-    def __init__(self, scales, depth, latent, colors):
+    def __init__(self, width, latent_width, depth, latent, colors):
         super().__init__()
+        scales = int(round(math.log(width // latent_width, 2)))
         self.encoder = Encoder(scales, depth, latent, colors,
                                spec_norm=True)
-        
+
     def forward(self, x):
         x = self.encoder(x)
         x = x.reshape(x.shape[0], -1)
@@ -116,7 +132,7 @@ class DiscriminatorSoftmax(nn.Module):
         self.encoder = Encoder(scales, depth, latent, colors,
                                spec_norm=True)
         self.fc = nn.Linear(latent*(latent_width**2), 2)
-        
+
     def forward(self, x):
         x = self.encoder(x)
         x = x.reshape(x.shape[0], -1)

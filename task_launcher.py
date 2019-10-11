@@ -4,6 +4,7 @@ import sys
 import glob
 import os
 import numpy as np
+import pickle
 from torch import nn
 from torch.utils.data import (DataLoader,
                               Subset)
@@ -15,19 +16,26 @@ from iterators.datasets import (CelebADataset,
                                 MnistDatasetOneHot,
                                 MnistDataset012,
                                 KMnistDatasetOneHot,
-                                SvhnDatasetOneHot)
+                                SvhnDatasetOneHot,
+                                CifarDatasetOneHot,
+                                TinyImagenetDataset,
+                                DSpriteDataset,
+                                OxfordFlowers102Dataset)
 from torchvision import datasets
 from torchvision.transforms import transforms
 from PIL import Image
 from torchvision.utils import save_image
-from swapgan import SwapGAN
-#from swapgan_pair import PairSwapGAN
-#from amr_classifier import ClassifierOnly
-#from acai import ACAI
-from acai_f import ACAIF
-#from acai_softmax import ACAI_Softmax
-from threegan import ThreeGAN
-#from pixel_arae import PixelARAE
+
+from models.swapgan import SwapGAN
+from models.amr_classifier import ClassifierOnly
+from models.acai_f import ACAIF
+from models.acai_f2 import ACAIF2
+from models.threegan import ThreeGAN
+from models.twogan import TwoGAN
+from models.kgan import KGAN
+from models.vae import VAE
+from models.ae import AE
+
 from functools import partial
 from importlib import import_module
 from tools import (generate_tsne,
@@ -41,61 +49,18 @@ from tools import (generate_tsne,
                    save_frames_continuous,
                    save_consistency_plot,
                    line2dict,
-                   count_params)
+                   count_params,
+                   dsprite_disentanglement,
+                   dsprite_disentanglement_fv)
 
-# Paired SwapGAN requires specialised dataset classes
-# to work.
-PAIR_SWAPGAN_SUPPORTED_DATASETS = ['zappos_hq']
 
-def get_model(ngf, norm_layer, cpt=None, use_cuda=True):
-    from architectures.shared import networks
-    # TODO: we need to unify this with the
-    # __main__ part below.
-    if norm_layer == 'batch':
-        norm_layer = nn.BatchNorm2d
-    else:
-        norm_layer = partial(nn.InstanceNorm2d, affine=True)
-    # Load the models.
-    gen = networks.ResnetEncoderDecoder(input_nc=3,
-                                        output_nc=3,
-                                        ngf=ngf,
-                                        n_blocks=4,
-                                        n_downsampling=3,
-                                        norm_layer=norm_layer)
-    if use_cuda:
-        gen = gen.cuda()
-    if cpt is not None:
-        print("Loading checkpoint for encoder: %s" % cpt)
-        dd = torch.load(cpt)
-        gen.load_state_dict(dd['g'])
-    gen.eval()
-    return gen
+from models.classifier import Classifier
 
-"""
-from classifier import Classifier
-from architectures.classifier import ResNetCelebA
-
-def get_classifier(mode='fid'):
-    if mode not in ['fid', 'incep']:
-        raise Exception("Mode must be either fid or incep")
-    # HACK
-    class ClassifierForFID(nn.Module):
-        def __init__(self, base):
-            super(ClassifierForFID, self).__init__()
-            self.base = base
-        def forward(self, x):
-            return self.base(x), None
-    cls = Classifier(ResNetCelebA())
-    cls.load("results_cls/test/25.pkl")
-    if mode == 'fid':
-        base = cls.classifier.base
-        base.eval()
-        cls = ClassifierForFID(base)
-    else:
-        cls = cls.classifier
-        cls.eval()
-    return cls
-"""
+def get_shuffled_indices(length):
+    rnd_state = np.random.RandomState(0)
+    idxs = np.arange(length)
+    rnd_state.shuffle(idxs)
+    return idxs
 
 if __name__ == '__main__':
 
@@ -103,15 +68,24 @@ if __name__ == '__main__':
         parser = argparse.ArgumentParser(description="")
         parser.add_argument('--name', type=str, default="my_experiment")
         parser.add_argument('--model', type=str, default='swapgan',
-                            choices=['swapgan', 'acai', 'acaif',
+                            choices=['swapgan',
+                                     'acai', 'acaif', 'acaif2', 'tester',
                                      'acai_softmax',
                                      'threegan',
+                                     'fourgan',
+                                     'kgan',
                                      'pixel_arae',
+                                     'vae',
+                                     'ae',
                                      'classifier'])
         parser.add_argument('--dataset', type=str, default='celeba',
                             choices=['celeba',
+                                     'celeba32',
                                      'celeba_hq',
+                                     'cifar10',
+                                     'tiny-imagenet',
                                      'zappos',
+                                     'zappos_cls',
                                      'zappos_hq',
                                      'flowers',
                                      'mnist',
@@ -119,11 +93,15 @@ if __name__ == '__main__':
                                      'mnist_small',
                                      'kmnist',
                                      'svhn',
+                                     'dsprite',
+                                     'dsprite64',
                                      'fashiongen'],
                             help="""
                             celeba = CelebA (64px) (set env var DATASET_CELEBA)
+                            celeba32 = CelebA (32px) (set env var DATASET_CELEBA)
                             celeba_hq = CelebA-HQ (128px) (set env DATASET_CELEBAHQ)
                             zappos = Zappos shoe dataset (64px) (set env var DATASET_ZAPPOS)
+                            zappos_cls = Zappos for classification (64px, fix shuffle bug)
                             zappos_hq = Zappos shoe dataset (128px) (set env var DATASET_ZAPPOSHQ)
                             flowers = TODO (64px)
                             mnist = MNIST (32px)
@@ -169,11 +147,12 @@ if __name__ == '__main__':
                             will be enabled. This is also the weight of the loss
                             term which tries to fool the auxiliary classifier with
                             mixes generated by the class mixing function.""")
+        parser.add_argument('--k', type=int, default=None, help="For kgan only")
         # TENPORARY
         parser.add_argument('--sigma', type=float, default=0., help="dropout p")
         parser.add_argument('--eps', type=float, default=1e-8, help="For supervised formulation")
         # ---------
-        parser.add_argument('--mixer', type=str, choices=['mixup', 'mixup2', 'fm', 'fm2'],
+        parser.add_argument('--mixer', type=str, choices=['mixup', 'mixup2', 'fm', 'fm2', 'fm3'],
                             help="""The mixing function to use. Choices are 'mixup',
                             "'mixup2', and 'fm'. 'mixup' will sample an alpha ~ U(0,1)
                             "in the shape (bs,1,1,1), 'mixup2' will sample an alpha ~ U(0,1)
@@ -191,6 +170,10 @@ if __name__ == '__main__':
                             help="""The loss function to use for the GAN component. The 
                             choices are 'bce' (binary cross-entropy) or 'mse' (mean-squared 
                             error).""")
+        parser.add_argument('--recon_loss', type=str, default='l1',
+                            choices=['l1', 'l2', 'bce', 'bce_sum'],
+                            help="""The loss function to use for the reconstruction component. The
+                            choices are 'bce' (binary cross-entropy) or 'l1' (L1 loss).""")
         parser.add_argument('--beta1', type=float, default=0., help="beta1 term of ADAM")
         parser.add_argument('--beta2', type=float, default=0.999, help="beta2 term of ADAM")
         parser.add_argument('--weight_decay', type=float, default=0.0,
@@ -203,17 +186,21 @@ if __name__ == '__main__':
         parser.add_argument('--cls_probe_args', type=str, default=None, help="python dict")
         parser.add_argument('--cls_probe_weight_decay', type=float, default=0,
                             help="Weight decay term specifically for cls_probe optimiser")
-        parser.add_argument('--cls_probe_backprop_grads', action='store_true',
+        parser.add_argument('--cls_probe_weight', type=float, default=1,
+                            help="")
+        parser.add_argument('--bpc', action='store_true',
                             help="""If set to true, the classifier probe can backprop gradients
                             back into the autoencoder""")
         parser.add_argument('--save_path', type=str, default=None)
         parser.add_argument('--val_batch_size', type=int, default=64)
         parser.add_argument('--save_every', type=int, default=5)
         parser.add_argument('--save_images_every', type=int, default=1)
-        parser.add_argument('--resume', type=str, default='auto')
+        parser.add_argument('--resume', type=str, default=None)
         parser.add_argument('--load_nonstrict', action='store_true')
         parser.add_argument('--no_verbose', action='store_true')
         parser.add_argument('--seed', type=int, default=0)
+        parser.add_argument('--vis_seed', type=int, default=0,
+                            help="Seed used for visualisation modes")
         parser.add_argument('--num_workers', type=int, default=4)
         parser.add_argument('--mode', type=str,
                             choices=['train',
@@ -223,7 +210,6 @@ if __name__ == '__main__':
                                      'interp_pixel_valid',
                                      'interp_sup_train',
                                      'interp_sup_valid',
-                                     'consistency',
                                      'save_frames',
                                      'tsne',
                                      'fid_train',
@@ -234,6 +220,8 @@ if __name__ == '__main__':
                                      'logreg',
                                      'class_embeddings',
                                      'dump_g',
+                                     'dsprite_disentangle',
+                                     'dsprite_disentangle_fv',
                                      'pdb'],
                             default='train',
                             help="""
@@ -266,16 +254,17 @@ if __name__ == '__main__':
 
     use_cuda = True if torch.cuda.is_available() else False
 
-    if args.dataset == 'celeba':
+    if args.dataset == 'celeba' or args.dataset == 'celeba32':
         # TODO: clean this up a bit
         with open(args.attr_file) as f:
             attrs = f.readline().rstrip().split()
         print("attrs = ")
         for s in attrs:
             print(" %s" % s)
+        img_sz = 64 if args.dataset == 'celeba' else 32
         train_transforms = [
-            transforms.Resize(64),
-            transforms.CenterCrop(64),
+            transforms.Resize(img_sz),
+            transforms.CenterCrop(img_sz),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ]
@@ -330,26 +319,33 @@ if __name__ == '__main__':
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ]
-        if args.model == 'swapgan_pair':
-            zappos_dir = os.environ['DATASET_ZAPPOS']
-            ds_train = ZapposPairDataset(root=zappos_dir,
-                                         pairs="iterators/zappo_pairs_iou0.7.txt",
-                                         transforms_=train_transforms,
-                                         mode='train')
-            ds_valid = ZapposPairDataset(root=zappos_dir,
-                                         pairs="iterators/zappo_pairs_iou0.7.txt",
-                                         transforms_=train_transforms,
-                                         mode='valid')
-        else:
-            ds_train = ZapposDataset(root=zappos_dir,
-                                     ids="iterators/zappo_bg_stats.csv",
-                                     transforms_=train_transforms,
-                                     mode='train')
-            ds_valid = ZapposDataset(root=zappos_dir,
-                                     ids="iterators/zappo_bg_stats.csv",
-                                     transforms_=train_transforms,
-                                     mode='valid')
+        ds_train = ZapposDataset(root=os.environ['DATASET_ZAPPOS'],
+                                 ids="iterators/zappo_bg_stats.csv",
+                                 transforms_=train_transforms,
+                                 mode='train')
+        ds_valid = ZapposDataset(root=os.environ['DATASET_ZAPPOS'],
+                                 ids="iterators/zappo_bg_stats.csv",
+                                 transforms_=train_transforms,
+                                 mode='valid')
         n_classes = 0
+    elif args.dataset == 'zappos_cls':
+        train_transforms = [
+            transforms.Resize(64),
+            transforms.CenterCrop(64),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        ]
+        ds_train = ZapposDataset(root=os.environ['DATASET_ZAPPOS'],
+                                 ids=None,
+                                 shuffle=True,
+                                 transforms_=train_transforms,
+                                 mode='train')
+        ds_valid = ZapposDataset(root=os.environ['DATASET_ZAPPOS'],
+                                 ids=None,
+                                 shuffle=True,
+                                 transforms_=train_transforms,
+                                 mode='valid')
+        n_classes = 21
     elif args.dataset in ['mnist', 'mnist012_small', 'mnist_small']:
         if args.dataset == 'mnist':
             mnist_class = MnistDatasetOneHot
@@ -360,14 +356,17 @@ if __name__ == '__main__':
         elif args.dataset == 'mnist_small':
             mnist_class = MnistDatasetOneHot
             img_sz = 16
-        ds_train = mnist_class('iterators', train=True, download=True,
+        ds_train_valid = mnist_class('iterators', train=True, download=True,
                                transform=transforms.Compose([
                                    transforms.Resize(img_sz),
                                    transforms.ToTensor(),
                                    transforms.Normalize((0.5,),
                                                         (0.5,))
                                ]))
-        ds_valid = mnist_class('iterators', train=False, download=True,
+        idxs = get_shuffled_indices(60000)
+        ds_train = Subset(ds_train_valid, idxs[0:50000]) # train is first 50k
+        ds_valid = Subset(ds_train_valid, idxs[50000::]) # valid is last 10k
+        ds_test = mnist_class('iterators', train=False, download=True,
                                transform=transforms.Compose([
                                    transforms.Resize(img_sz),
                                    transforms.ToTensor(),
@@ -376,14 +375,17 @@ if __name__ == '__main__':
                                ]))
         n_classes = 10
     elif args.dataset == 'kmnist':
-        ds_train = KMnistDatasetOneHot('iterators', train=True, download=True,
+        ds_train_and_valid = KMnistDatasetOneHot('iterators', train=True, download=True,
                                        transform=transforms.Compose([
                                            transforms.Resize(32),
                                            transforms.ToTensor(),
                                            transforms.Normalize((0.5,),
                                                                 (0.5,))
                                        ]))
-        ds_valid = KMnistDatasetOneHot('iterators', train=False, download=True,
+        idxs = get_shuffled_indices(60000)
+        ds_train = Subset(ds_train_and_valid, indices=idxs[0:50000])
+        ds_valid = Subset(ds_train_and_valid, indices=idxs[50000:])
+        ds_test = KMnistDatasetOneHot('iterators', train=False, download=True,
                                        transform=transforms.Compose([
                                            transforms.Resize(32),
                                            transforms.ToTensor(),
@@ -392,14 +394,17 @@ if __name__ == '__main__':
                                        ]))
         n_classes = 10
     elif args.dataset == 'svhn':
-        ds_train = SvhnDatasetOneHot('iterators', split='train', download=True,
+        ds_train_and_valid = SvhnDatasetOneHot('iterators', split='train', download=True,
                                      transform=transforms.Compose([
                                          transforms.Resize(32),
                                          transforms.ToTensor(),
                                          transforms.Normalize((0.5,),
                                                               (0.5,))
                                      ]))
-        ds_valid = SvhnDatasetOneHot('iterators', split='test', download=True,
+        idxs = get_shuffled_indices(ds_train_and_valid.data.shape[0])
+        ds_train = Subset(ds_train_and_valid, indices=idxs[0:int(len(idxs)*0.9)])
+        ds_valid = Subset(ds_train_and_valid, indices=idxs[int(len(idxs)*0.9)::])
+        ds_test = SvhnDatasetOneHot('iterators', split='test', download=True,
                                      transform=transforms.Compose([
                                          transforms.Resize(32),
                                          transforms.ToTensor(),
@@ -407,6 +412,55 @@ if __name__ == '__main__':
                                                               (0.5,))
                                      ]))
         n_classes = 10
+    elif args.dataset == 'tiny-imagenet':
+        this_transform = [
+            transforms.Resize(32),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,),
+                                 (0.5,))
+        ]
+
+        ds_train = TinyImagenetDataset(root=os.environ['DATASET_TINY_IMAGENET'],
+                                         transforms_=this_transform,
+                                         mode='train')
+        ds_valid= TinyImagenetDataset(root=os.environ['DATASET_TINY_IMAGENET'],
+                                        transforms_=this_transform,
+                                        mode='valid')
+        n_classes = 200
+    elif args.dataset == 'cifar10':
+        ds_train_valid = CifarDatasetOneHot('iterators', train=True, download=True,
+                                            transform=transforms.Compose([
+                                                transforms.Resize(32),
+                                                transforms.ToTensor(),
+                                                transforms.Normalize((0.5,),
+                                                                     (0.5,))
+                                            ]))
+        idxs = get_shuffled_indices(50000)
+        ds_train = Subset(ds_train_valid, idxs[0:40000]) # train is first 40k
+        ds_valid = Subset(ds_train_valid, idxs[40000::]) # valid is last 10k
+
+        ds_test = CifarDatasetOneHot('iterators', train=False, download=True,
+                                     transform=transforms.Compose([
+                                         transforms.Resize(32),
+                                         transforms.ToTensor(),
+                                         transforms.Normalize((0.5,),
+                                                              (0.5,))
+                                     ]))
+        n_classes = 10
+    elif args.dataset == 'dsprite':
+        ds_train = DSpriteDataset(root='iterators', seed=args.seed)
+        """
+        ds_valid = DSpriteDataset('iterators', split='test', download=True,
+                                     transform=transforms.Compose([
+                                         transforms.Resize(32),
+                                         transforms.ToTensor(),
+                                         transforms.Normalize((0.5,),
+                                                              (0.5,))
+                                     ]))
+        """
+        ds_valid = ds_train # for now they are the same
+        n_classes = 0 # not applicable here
+        pass
     elif args.dataset == 'fashiongen':
         train_transforms = [
             transforms.Resize(128),
@@ -443,6 +497,10 @@ if __name__ == '__main__':
                               batch_size=bs,
                               shuffle=True,
                               num_workers=args.num_workers)
+    loader_test = DataLoader(ds_test,
+                             batch_size=bs,
+                             shuffle=False,
+                             num_workers=1)
 
     if args.save_path is None:
         args.save_path = os.environ['RESULTS_DIR']
@@ -450,7 +508,7 @@ if __name__ == '__main__':
         save_path = args.save_path
     else:
         save_path = "%s/s%i" % (args.save_path, args.seed)
-    
+
     mod = import_module(args.arch.replace("/", ".").\
                         replace(".py", ""))
     dd = mod.get_network(n_channels=args.n_channels,
@@ -485,28 +543,40 @@ if __name__ == '__main__':
                 save_image( imgs,
                             nrow=inputs.size(0),
                             filename="%s/%s/%i_%s.png" % (save_path, args.name, epoch, mode))
+        return {}
 
-    def image_handler_swapgan(losses, batch, outputs, kwargs):
+    def image_handler_vae(losses, batch, outputs, kwargs):
         if kwargs['iter'] == 1:
             if kwargs['epoch'] % args.save_images_every == 0:
                 mode = kwargs['mode']
                 epoch = kwargs['epoch']
-                input1 = outputs['input1']*0.5 + 0.5
-                recon1 = outputs['recon1']*0.5 + 0.5
-                input2 = outputs['input2']*0.5 + 0.5
-                recon2 = outputs['recon2']*0.5 + 0.5
-                mix = outputs['mix']*0.5 + 0.5
-                imgs = torch.cat((input1, recon1, input2, recon2, mix))
+                input1 = outputs['input']*0.5 + 0.5
+                recon1 = outputs['recon']*0.5 + 0.5
+                sample = outputs['sample']*0.5 + 0.5
+                imgs = torch.cat((input1, recon1, sample))
                 save_image( imgs,
                             nrow=input1.size(0),
                             filename="%s/%s/%i_%s.png" % (save_path, args.name, epoch, mode))
+        return {}
+
+    def image_handler_ae(losses, batch, outputs, kwargs):
+        if kwargs['iter'] == 1:
+            if kwargs['epoch'] % args.save_images_every == 0:
+                mode = kwargs['mode']
+                epoch = kwargs['epoch']
+                input1 = outputs['input']*0.5 + 0.5
+                recon1 = outputs['recon']*0.5 + 0.5
+                imgs = torch.cat((input1, recon1))
+                save_image( imgs,
+                            nrow=input1.size(0),
+                            filename="%s/%s/%i_%s.png" % (save_path, args.name, epoch, mode))
+        return {}
 
     def image_handler_blank(losses, batch, outputs, kwargs):
-        return
-            
+        return {}
 
     if args.model == 'swapgan':
-        gan_class = SwapGAN
+        gan_class = TwoGAN
         image_handler = image_handler_default
     elif args.model == 'swapgan_pair':
         """
@@ -517,17 +587,26 @@ if __name__ == '__main__':
         image_handler = image_handler_swapgan
         """
         raise NotImplementedError()
-    elif args.model == 'acai':
-        gan_class = ACAI
-        image_handler = image_handler_default
     elif args.model == 'acaif':
         gan_class = ACAIF
         image_handler = image_handler_default
-    elif args.model == 'acai_softmax':
-        gan_class = ACAI_Softmax
+    elif args.model == 'acaif2':
+        gan_class = ACAIF2
+        image_handler = image_handler_default
+    elif args.model == 'tester':
+        from models.tester import Tester
+        gan_class = Tester
         image_handler = image_handler_default
     elif args.model == 'threegan':
         gan_class = ThreeGAN
+        image_handler = image_handler_default
+    elif args.model == 'fourgan':
+        gan_class = FourGAN
+        image_handler = image_handler_default
+    elif args.model == 'kgan':
+        if args.k is None:
+            raise Exception("`k` must be > 0 for KGAN")
+        gan_class = partial(KGAN, k=args.k)
         image_handler = image_handler_default
     elif args.model == 'pixel_arae':
         gan_class = PixelARAE
@@ -535,6 +614,26 @@ if __name__ == '__main__':
     elif args.model == 'classifier':
         gan_class = ClassifierOnly
         image_handler = image_handler_blank
+    elif args.model == 'vae':
+        gan_class = VAE
+        image_handler = image_handler_vae
+    elif args.model == 'ae':
+        gan_class = AE
+        image_handler = image_handler_ae
+
+    handlers = [image_handler]
+    if args.dataset == 'dsprite':
+        # Add the disentanglement metric here.
+        def dsprite_handler(gen, dataset):
+            def image_handler_vae(losses, batch, outputs, kwargs):
+                is_vae = True if args.model == 'vae' else False
+                if kwargs['iter'] == 1 and kwargs['mode'] == 'valid':
+                    return dsprite_disentanglement_fv(gen,
+                                                      dataset,
+                                                      is_vae=is_vae)
+                return {}
+            return image_handler_vae
+        handlers.append( dsprite_handler(gen, ds_train) )
 
     cls_enc = None
     if args.cls_probe is not None:
@@ -545,37 +644,80 @@ if __name__ == '__main__':
         print(cls_enc)
         print("# params: %i" % count_params(cls_enc))
 
-    gan = gan_class(
-        generator=gen,
-        disc_x=disc_x,
-        class_mixer=class_mixer,
-        lamb=args.lamb,
-        beta=args.beta,
-        cls=args.cls,
-        mixer=args.mixer,
-        sigma=args.sigma,
-        cls_loss=args.cls_loss,
-        gan_loss=args.gan_loss,
-        disable_mix=args.disable_mix,
-        disable_g_recon=args.disable_g_recon,
-        cls_enc=cls_enc,
-        opt_args={'lr': args.lr,
-                  'betas': (args.beta1, args.beta2),
-                  'weight_decay': args.weight_decay},
-        update_g_every=args.update_g_every,
-        cls_enc_weight_decay=args.cls_probe_weight_decay,
-        cls_enc_backprop_grads=args.cls_probe_backprop_grads,
-        handlers=[image_handler]
-    )
-    gan.eps = args.eps
-    if args.load_nonstrict:
-        gan.load_strict = False
+        # Add the handler to compute predictions on test set
+        # at start of each epoch.
+        def test_set_handler(gen, cls, dataset):
+            def _test_set_handler(losses, batch, outputs, kwargs):
+                # Compute at the start of the validation run.
+                if kwargs['iter'] == 1 and kwargs['mode'] == 'valid':
+                    dest_dir = "%s/%s/test_preds" % (save_path, args.name)
+                    if not os.path.exists(dest_dir):
+                        os.makedirs(dest_dir)
+                    instances = []
+                    for b, (x_batch, y_batch) in enumerate(dataset):
+                        x_batch = x_batch.cuda()
+                        enc_batch = gen.encoder(x_batch)
+                        enc_batch = enc_batch.view(-1, np.prod(enc_batch.shape[1:]))
+                        preds_batch = cls(enc_batch).argmax(dim=1)
+                        y_labels = y_batch.argmax(dim=1)
+                        instances.append({'pred': preds_batch, 'labels': y_labels})
+                    with open("%s/%i.pkl" % (dest_dir, kwargs['epoch']), 'wb') as f:
+                        pickle.dump(instances, f)
+
+                return {}
+            return _test_set_handler
+        handlers.append( test_set_handler(gen, cls_enc, loader_test) )
+
+    # TODO: check for BaseAE, not VAE
+    if gan_class not in [VAE, AE]:
+        gan = gan_class(
+            generator=gen,
+            disc_x=disc_x,
+            class_mixer=class_mixer,
+            lamb=args.lamb,
+            beta=args.beta,
+            cls=args.cls,
+            mixer=args.mixer,
+            sigma=args.sigma,
+            recon_loss=args.recon_loss,
+            cls_loss=args.cls_loss,
+            gan_loss=args.gan_loss,
+            disable_mix=args.disable_mix,
+            disable_g_recon=args.disable_g_recon,
+            cls_enc=cls_enc,
+            opt_args={'lr': args.lr,
+                      'betas': (args.beta1, args.beta2),
+                      'weight_decay': args.weight_decay},
+            update_g_every=args.update_g_every,
+            cls_enc_weight_decay=args.cls_probe_weight_decay,
+            cls_enc_weight=args.cls_probe_weight,
+            cls_enc_backprop_grads=args.bpc,
+            handlers=handlers
+        )
+        gan.eps = args.eps
+        if args.load_nonstrict:
+            gan.load_strict = False
+    else:
+        gan = gan_class(
+            generator=gen,
+            lamb=args.lamb,
+            beta=args.beta,
+            recon_loss=args.recon_loss,
+            opt_args={'lr': args.lr,
+                      'betas': (args.beta1, args.beta2),
+                      'weight_decay': args.weight_decay},
+            handlers=handlers
+        )
+        if args.load_nonstrict:
+            gan.load_strict = False
 
     latest_model = None
+    cpt_name = 'none'
     if args.resume is not None:
+        model_dir = "%s/%s" % (save_path, args.name)
         if args.resume == 'auto':
             # autoresume
-            model_dir = "%s/%s" % (save_path, args.name)
+
             # List all the pkl files.
             files = glob.glob("%s/*.pkl" % model_dir)
             # Make them absolute paths.
@@ -586,18 +728,19 @@ if __name__ == '__main__':
                 print("Auto-resume mode found latest model: %s" %
                       latest_model)
                 gan.load(latest_model)
+        elif args.resume.isdigit():
+            gan.load("%s/%s.pkl" % (model_dir, args.resume))
         else:
             gan.load(args.resume)
-
-    if latest_model is not None:
-        cpt_name = os.path.basename(latest_model)
-    else:
-        cpt_name = os.path.basename(args.resume)
+        if latest_model is not None:
+            cpt_name = os.path.basename(latest_model)
+        else:
+            cpt_name = os.path.basename(args.resume)
 
     expt_dir = "%s/%s" % (save_path, args.name)
     if not os.path.exists(expt_dir):
         os.makedirs(expt_dir)
-        
+
     from subprocess import check_output
     args_file = "%s/args.txt" % expt_dir
     f_mode = 'w' if not os.path.exists(args_file) else 'a'
@@ -609,7 +752,7 @@ if __name__ == '__main__':
         git_branch = git_branch.decode('utf-8').rstrip()
         f_args.write("git_branch: %s\n" % git_branch)
 
- 
+
     if args.mode == 'train':
 
         gan.train(itr_train=loader_train,
@@ -617,26 +760,25 @@ if __name__ == '__main__':
                   epochs=args.epochs,
                   model_dir=expt_dir,
                   result_dir=expt_dir,
-                  save_every=args.save_every,
-                  verbose=False if args.no_verbose else True)
+                  save_every=args.save_every)
 
-    elif 'consistency' in args.mode:
-
-        batch = iter(loader_train).next()
-        if len(batch) == 3:
-            x_batch, y_batch = batch[0:2], batch[2::]
-        else:
-            x_batch, y_batch = batch[0], batch[1]
-        if use_cuda:
-            x_batch = x_batch.cuda()
-            y_batch = y_batch.cuda()
-
-        out_dir = "%s/%s/%s/%s/model-%s/" % (save_path, args.name, args.mode, args.mixer, cpt_name)
-        save_consistency_plot(gan, x_batch, out_dir)
+    #elif 'consistency' in args.mode:
+    #
+    #    batch = iter(loader_train).next()
+    #    if len(batch) == 3:
+    #        x_batch, y_batch = batch[0:2], batch[2::]
+    #    else:
+    #        x_batch, y_batch = batch[0], batch[1]
+    #    if use_cuda:
+    #        x_batch = x_batch.cuda()
+    #        y_batch = y_batch.cuda()
+    #
+    #    out_dir = "%s/%s/%s/%s/model-%s/" % (save_path, args.name, args.mode, args.mixer, cpt_name)
+    #    save_consistency_plot(gan, x_batch, out_dir)
 
     elif 'interp' in args.mode:
 
-        torch.manual_seed(0)
+        torch.manual_seed(args.vis_seed)
 
         if args.mode in ['interp_train', 'interp_sup_train', 'interp_pixel_train']:
             batch = iter(loader_train).next()
@@ -657,7 +799,7 @@ if __name__ == '__main__':
             for key in override_kwargs:
                 kwargs[key] = override_kwargs[key]
         print("kwargs:", kwargs)
-        
+
         if '_sup_' in args.mode:
             out_dir = "%s/%s/%s/%s/model-%s/" % (save_path, args.name, args.mode, args.mixer, cpt_name)
             save_interp_supervised(gan,
@@ -689,7 +831,7 @@ if __name__ == '__main__':
 
     elif args.mode == 'save_frames':
 
-        torch.manual_seed(0)
+        torch.manual_seed(args.vis_seed)
 
         # TODO: only does training iterator
 
@@ -702,7 +844,7 @@ if __name__ == '__main__':
             for key in override_kwargs:
                 kwargs[key] = override_kwargs[key]
         print("kwargs:", kwargs)
-        
+
         x_batch, _ = iter(loader_train).next()
         if use_cuda:
             x_batch = x_batch.cuda()
@@ -723,7 +865,7 @@ if __name__ == '__main__':
             for key in override_kwargs:
                 kwargs[key] = override_kwargs[key]
         print("kwargs:", kwargs)
-        
+
         embed_dst = "%s/%s/tsne/model-%s/" % \
                     (save_path, args.name, cpt_name)
         generate_tsne(loader_train,
@@ -743,7 +885,7 @@ if __name__ == '__main__':
         save_embedding(loader_valid,
                        gan,
                        save_file=embed_valid)
-        
+
     elif args.mode == 'logreg':
 
         kwargs = {'max_iters': 10000}
@@ -757,7 +899,7 @@ if __name__ == '__main__':
                      gan,
                      save_path=logreg_dst,
                      max_iters=kwargs['max_iters'])
-        
+
     elif args.mode in ['fid_train', 'fid_valid']:
 
         if '_train' in args.mode:
@@ -803,7 +945,37 @@ if __name__ == '__main__':
         print("Dumping G weights to %s..." % save_path)
         torch.save(gan.generator.state_dict(), "%s/%s" % (save_path, cpt_name))
 
-        
+    elif args.mode == 'dsprite_disentangle':
+        if args.dataset != 'dsprite':
+            raise Exception("The mode `dsprite_disentangle` is only compatible " +
+                            "with the `dsprite` dataset!")
+        kwargs = {'num_examples': 50000}
+        if args.mode_override is not None:
+            override_kwargs = line2dict(args.mode_override)
+            for key in override_kwargs:
+                kwargs[key] = override_kwargs[key]
+        print("kwargs:", kwargs)
+        dsprite_disentanglement(gan,
+                                ds_train,
+                                save_path="%s/%s/disentangle/%s/model-%s/" % (save_path, args.name, args.mixer, cpt_name),
+                                num_examples=kwargs['num_examples'])
+
+    elif args.mode == 'dsprite_disentangle_fv':
+        if args.dataset != 'dsprite':
+            raise Exception("The mode `dsprite_disentangle` is only compatible " +
+                            "with the `dsprite` dataset!")
+        override_kwargs = {}
+        if args.mode_override is not None:
+            override_kwargs = line2dict(args.mode_override)
+        print("kwargs:", override_kwargs)
+        dval = dsprite_disentanglement_fv(gan.generator,
+                                          ds_train,
+                                          is_vae=True if args.model == 'vae' else False,
+                                          verbose=True,
+                                          save_path="%s/%s/disentangle_fv/%s/model-%s/" % (save_path, args.name, args.mixer, cpt_name),
+                                          **override_kwargs)
+        print("Disentanglement metric: %f" % dval['dfv'])
+
     elif args.mode == 'pdb':
         import pdb
         pdb.set_trace()

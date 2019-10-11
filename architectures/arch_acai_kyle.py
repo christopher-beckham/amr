@@ -14,9 +14,11 @@ def get_network(n_channels, **kwargs):
         'advdepth': 16, #nfd?
         'latent': 2, #4x4x2 = 32
     }
-    scales = int(round(math.log(args['width'] // args['latent_width'], 2)))
-    gen = EncoderDecoder(scales, n_channels, args['depth'], args['latent'])
-    disc_x = Discriminator(scales, args['advdepth'], args['latent'], n_channels)
+    #gen = EncoderDecoder(scales, n_channels, args['depth'], args['latent'])
+    #disc_x = Discriminator(scales, args['advdepth'], args['latent'], n_channels)
+    gen = EncoderDecoder(args['width'], args['latent_width'], n_channels, args['depth'], args['latent'])
+    disc_x = Discriminator(args['width'], args['latent_width'], args['advdepth'], args['latent'], n_channels)
+
     return {
         'gen': gen,
         'disc_x': disc_x,
@@ -30,3 +32,6 @@ if __name__ == '__main__':
     xfake = torch.ones((5,1,32,32))
     print(gen.encode(xfake).shape)
     print(disc)
+
+"""
+"""
