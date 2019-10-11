@@ -4,7 +4,9 @@ import matplotlib.pyplot as plt
 import os
 import tempfile
 import torch
+import glob
 import numpy as np
+from collections import OrderedDict
 from itertools import product
 from torch import nn
 from torch import optim
@@ -37,6 +39,35 @@ def line2dict(st):
         except ValueError:
             dd[key] = val
     return dd
+
+def find_latest_pkl_in_folder(model_dir):
+    # List all the pkl files.
+    files = glob.glob("%s/*.pkl" % model_dir)
+    # Make them absolute paths.
+    files = [os.path.abspath(key) for key in files]
+    if len(files) > 0:
+        # Get creation time and use that.
+        latest_model = max(files, key=os.path.getctime)
+        print("Auto-resume mode found latest model: %s" %
+              latest_model)
+        return latest_model
+    return None
+
+def generate_name_from_args(dd, kwargs_for_name):
+    buf = {}
+    for key in dd:
+        if key in kwargs_for_name:
+            if dd[key] is None:
+                continue
+            new_name, fn_to_apply = kwargs_for_name[key]
+            new_val = fn_to_apply(dd[key])
+            if dd[key] is True:
+                new_val = ''
+            buf[new_name] = new_val
+    buf_sorted = OrderedDict(sorted(buf.items()))
+    #tags = sorted(tags.split(","))
+    name = ",".join([ "%s=%s" % (key, buf_sorted[key]) for key in buf_sorted.keys()])
+    return name
 
 def ndprint(x):
     # https://stackoverflow.com/questions/2891790/how-to-pretty-print-a-numpy-array-without-scientific-notation-and-with-given-pre

@@ -5,6 +5,8 @@ import glob
 import os
 import numpy as np
 import pickle
+import yaml
+
 from torch import nn
 from torch.utils.data import (DataLoader,
                               Subset)
@@ -28,8 +30,8 @@ from torchvision.utils import save_image
 
 from models.swapgan import SwapGAN
 from models.amr_classifier import ClassifierOnly
-from models.acai_f import ACAIF
 from models.acai_f2 import ACAIF2
+from models.acai_f3 import ACAIF3
 from models.threegan import ThreeGAN
 from models.twogan import TwoGAN
 from models.kgan import KGAN
@@ -38,7 +40,9 @@ from models.ae import AE
 
 from functools import partial
 from importlib import import_module
-from tools import (generate_tsne,
+from tools import (generate_name_from_args,
+                   generate_tsne,
+                   find_latest_pkl_in_folder,
                    compute_inception,
                    compute_fid,
                    train_logreg,
@@ -56,6 +60,50 @@ from tools import (generate_tsne,
 
 from models.classifier import Classifier
 
+# This dictionary's keys are the ones that are used
+# to auto-generate the experiment name. The values
+# of those keys are tuples, the first element being
+# shortened version of the key (e.g. 'dataset' -> 'ds')
+# and a function which may optionally shorten the value.
+id_ = lambda x: str(x)
+dict2line = lambda x: x.replace(" ", "").\
+    replace('"', '').\
+    replace("'", "").\
+    replace(":", "=").\
+    replace(",", ";")
+basename = lambda x: os.path.basename(x)
+KWARGS_FOR_NAME = {
+    'model': ('model', id_),
+    'dataset': ('ds', id_),
+    'subset_train': ('sub', id_),
+    'network': ('arch', basename),
+    'batch_size': ('bs', id_),
+    'n_channels': ('nc', id_),
+    'ngf': ('ngf', id_),
+    'ndf': ('ndf', id_),
+    'lr': ('lr', id_),
+    'lamb': ('lamb', id_),
+    'cls': ('cls', id_),
+    'k': ('k', id_),
+    'mixer': ('mixer', id_),
+    'disable_g_recon': ('dgr', id_),
+    'disable_mix': ('no_mix', id_),
+    'eps': ('m_eps', id_),
+    'cls_loss': ('c_l', id_),
+    'gan_loss': ('g_l', id_),
+    'recon_loss': ('r_l', id_),
+    'weight_decay': ('wd', id_),
+    'update_g_every': ('g', id_),
+    'beta1': ('b1', id_),
+    'beta2': ('b2', id_),
+    'cls_probe': ('probe', basename),
+    'cls_probe_args': ('probe_args', dict2line),
+    'cls_probe_weight_decay': ('probe_wd', id_),
+    'bpc': ('bpc', id_),
+    'trial_id': ('_trial', id_)
+}
+
+
 def get_shuffled_indices(length):
     rnd_state = np.random.RandomState(0)
     idxs = np.arange(length)
@@ -66,10 +114,14 @@ if __name__ == '__main__':
 
     def parse_args():
         parser = argparse.ArgumentParser(description="")
-        parser.add_argument('--name', type=str, default="my_experiment")
+        parser.add_argument('--name', type=str, default=None,
+                            help="""The name of the experiment. If this is `None`,
+                            then a name is automatically generated from the specified
+                            args (recommended).
+                            """)
         parser.add_argument('--model', type=str, default='swapgan',
                             choices=['swapgan',
-                                     'acai', 'acaif', 'acaif2', 'tester',
+                                     'acai', 'acaif', 'acaif2', 'acaif3', 'tester',
                                      'acai_softmax',
                                      'threegan',
                                      'fourgan',
@@ -114,9 +166,6 @@ if __name__ == '__main__':
         parser.add_argument('--subset_train', type=int, default=None,
                             help="""If set, artficially decrease the size of the training
                             data. Use this to easily perform data ablation experiments.""")
-        parser.add_argument('--data_dir', type=str,
-                            default=None,
-                            help="** NO LONGER USED **")
         parser.add_argument('--attr_file', type=str,
                             default="attr_cfgs/all.txt")
         parser.add_argument('--arch', type=str,
@@ -152,7 +201,7 @@ if __name__ == '__main__':
         parser.add_argument('--sigma', type=float, default=0., help="dropout p")
         parser.add_argument('--eps', type=float, default=1e-8, help="For supervised formulation")
         # ---------
-        parser.add_argument('--mixer', type=str, choices=['mixup', 'mixup2', 'fm', 'fm2', 'fm3'],
+        parser.add_argument('--mixer', type=str, choices=['mixup', 'mixup2', 'fm', 'fm2'],
                             help="""The mixing function to use. Choices are 'mixup',
                             "'mixup2', and 'fm'. 'mixup' will sample an alpha ~ U(0,1)
                             "in the shape (bs,1,1,1), 'mixup2' will sample an alpha ~ U(0,1)
@@ -245,15 +294,18 @@ if __name__ == '__main__':
         return args
 
     args = parse_args()
-    print(args)
+
+    print("Arguments:")
+    args_dict = vars(args)
+    args_yaml = yaml.dump(args_dict)
+    print("  " + args_yaml.replace("\n","\n  "))
 
     if args.mode == 'train':
         torch.manual_seed(args.seed)
-    #else:
-    #    torch.manual_seed(0)
 
     use_cuda = True if torch.cuda.is_available() else False
 
+    ds_test = None
     if args.dataset == 'celeba' or args.dataset == 'celeba32':
         # TODO: clean this up a bit
         with open(args.attr_file) as f:
@@ -357,75 +409,84 @@ if __name__ == '__main__':
             mnist_class = MnistDatasetOneHot
             img_sz = 16
         ds_train_valid = mnist_class('iterators', train=True, download=True,
-                               transform=transforms.Compose([
-                                   transforms.Resize(img_sz),
-                                   transforms.ToTensor(),
-                                   transforms.Normalize((0.5,),
-                                                        (0.5,))
-                               ]))
+                                     transform=transforms.Compose([
+                                         transforms.Resize(img_sz),
+                                         transforms.ToTensor(),
+                                         transforms.Normalize((0.5,),
+                                                              (0.5,))
+                                     ]))
         idxs = get_shuffled_indices(60000)
         ds_train = Subset(ds_train_valid, idxs[0:50000]) # train is first 50k
         ds_valid = Subset(ds_train_valid, idxs[50000::]) # valid is last 10k
         ds_test = mnist_class('iterators', train=False, download=True,
-                               transform=transforms.Compose([
-                                   transforms.Resize(img_sz),
-                                   transforms.ToTensor(),
-                                   transforms.Normalize((0.5,),
-                                                        (0.5,))
-                               ]))
+                              transform=transforms.Compose([
+                                  transforms.Resize(img_sz),
+                                  transforms.ToTensor(),
+                                  transforms.Normalize((0.5,),
+                                                       (0.5,))
+                              ]))
         n_classes = 10
     elif args.dataset == 'kmnist':
         ds_train_and_valid = KMnistDatasetOneHot('iterators', train=True, download=True,
-                                       transform=transforms.Compose([
-                                           transforms.Resize(32),
-                                           transforms.ToTensor(),
-                                           transforms.Normalize((0.5,),
-                                                                (0.5,))
-                                       ]))
+                                                 transform=transforms.Compose([
+                                                     transforms.Resize(32),
+                                                     transforms.ToTensor(),
+                                                     transforms.Normalize((0.5,),
+                                                                          (0.5,))
+                                                 ]))
         idxs = get_shuffled_indices(60000)
         ds_train = Subset(ds_train_and_valid, indices=idxs[0:50000])
         ds_valid = Subset(ds_train_and_valid, indices=idxs[50000:])
         ds_test = KMnistDatasetOneHot('iterators', train=False, download=True,
-                                       transform=transforms.Compose([
-                                           transforms.Resize(32),
-                                           transforms.ToTensor(),
-                                           transforms.Normalize((0.5,),
-                                                                (0.5,))
-                                       ]))
+                                      transform=transforms.Compose([
+                                          transforms.Resize(32),
+                                          transforms.ToTensor(),
+                                          transforms.Normalize((0.5,),
+                                                               (0.5,))
+                                      ]))
         n_classes = 10
     elif args.dataset == 'svhn':
         ds_train_and_valid = SvhnDatasetOneHot('iterators', split='train', download=True,
-                                     transform=transforms.Compose([
-                                         transforms.Resize(32),
-                                         transforms.ToTensor(),
-                                         transforms.Normalize((0.5,),
-                                                              (0.5,))
-                                     ]))
+                                               transform=transforms.Compose([
+                                                   transforms.Resize(32),
+                                                   transforms.ToTensor(),
+                                                   transforms.Normalize((0.5,),
+                                                                        (0.5,))
+                                               ]))
         idxs = get_shuffled_indices(ds_train_and_valid.data.shape[0])
         ds_train = Subset(ds_train_and_valid, indices=idxs[0:int(len(idxs)*0.9)])
         ds_valid = Subset(ds_train_and_valid, indices=idxs[int(len(idxs)*0.9)::])
         ds_test = SvhnDatasetOneHot('iterators', split='test', download=True,
-                                     transform=transforms.Compose([
-                                         transforms.Resize(32),
-                                         transforms.ToTensor(),
-                                         transforms.Normalize((0.5,),
-                                                              (0.5,))
-                                     ]))
+                                    transform=transforms.Compose([
+                                        transforms.Resize(32),
+                                        transforms.ToTensor(),
+                                        transforms.Normalize((0.5,),
+                                                             (0.5,))
+                                    ]))
         n_classes = 10
     elif args.dataset == 'tiny-imagenet':
         this_transform = [
-            transforms.Resize(32),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(10),
+            transforms.RandomCrop(56),
+            transforms.Resize(64),
             transforms.ToTensor(),
             transforms.Normalize((0.5,),
                                  (0.5,))
         ]
 
-        ds_train = TinyImagenetDataset(root=os.environ['DATASET_TINY_IMAGENET'],
-                                         transforms_=this_transform,
-                                         mode='train')
-        ds_valid= TinyImagenetDataset(root=os.environ['DATASET_TINY_IMAGENET'],
-                                        transforms_=this_transform,
-                                        mode='valid')
+        ds_train_and_valid = TinyImagenetDataset(root=os.environ['DATASET_TINY_IMAGENET'],
+                                                 transforms_=this_transform,
+                                                 mode='train')
+        idxs = get_shuffled_indices(len(ds_train_and_valid))
+        ds_train = Subset(ds_train_and_valid, indices=idxs[0:int(len(idxs)*0.9)])
+        ds_valid = Subset(ds_train_and_valid, indices=idxs[int(len(idxs)*0.9)::])
+
+        # This is actually the valid set -- but the actual test set labels
+        # don't exist publicly.
+        ds_test = TinyImagenetDataset(root=os.environ['DATASET_TINY_IMAGENET'],
+                                      transforms_=this_transform,
+                                      mode='valid')
         n_classes = 200
     elif args.dataset == 'cifar10':
         ds_train_valid = CifarDatasetOneHot('iterators', train=True, download=True,
@@ -460,7 +521,6 @@ if __name__ == '__main__':
         """
         ds_valid = ds_train # for now they are the same
         n_classes = 0 # not applicable here
-        pass
     elif args.dataset == 'fashiongen':
         train_transforms = [
             transforms.Resize(128),
@@ -497,17 +557,21 @@ if __name__ == '__main__':
                               batch_size=bs,
                               shuffle=True,
                               num_workers=args.num_workers)
-    loader_test = DataLoader(ds_test,
-                             batch_size=bs,
-                             shuffle=False,
-                             num_workers=1)
+    loader_test = None
+    if ds_test is not None:
+        loader_test = DataLoader(ds_test,
+                                 batch_size=bs,
+                                 shuffle=False,
+                                 num_workers=1)
 
     if args.save_path is None:
+        print("`save_path` not specified, so retrieving from $RESULTS_DIR...")
         args.save_path = os.environ['RESULTS_DIR']
     if args.seed == 0:
         save_path = args.save_path
     else:
         save_path = "%s/s%i" % (args.save_path, args.seed)
+    print("Save path: %s" % save_path)
 
     mod = import_module(args.arch.replace("/", ".").\
                         replace(".py", ""))
@@ -519,97 +583,53 @@ if __name__ == '__main__':
     disc_x = dd['disc_x']
     class_mixer = dd['class_mixer']
     print("Generator:")
-    print(gen)
-    print("# params: %i" % count_params(gen))
+    print("  " + str(gen).replace("\n","\n  "))
+    print("  # learnable params: %i" % count_params(gen))
     print("Discriminator:")
-    print(disc_x)
-    print("# params: %i" % count_params(disc_x))
+    print("  " + str(disc_x).replace("\n"," \n  "))
+    print("  # learnable params: %i" % count_params(disc_x))
     if class_mixer is not None:
         print("Class mixer:")
-        print(class_mixer)
-        print("# params: %i" % count_params(class_mixer))
+        print("  " + str(class_mixer).replace("\n", "\n  "))
+        print("  # learnable params: %i" % count_params(class_mixer))
 
-    def image_handler_default(losses, batch, outputs, kwargs):
-        if kwargs['iter'] == 1:
-            if kwargs['epoch'] % args.save_images_every == 0:
-                mode = kwargs['mode']
-                epoch = kwargs['epoch']
-                recon = outputs['recon']*0.5 + 0.5
-                inputs = outputs['input']*0.5 + 0.5
-                inputs_permed = inputs[outputs['perm']]
-                recon_permed = recon[outputs['perm']]
-                mix = outputs['mix']*0.5 + 0.5
-                imgs = torch.cat((inputs, recon, inputs_permed, recon_permed, mix))
-                save_image( imgs,
-                            nrow=inputs.size(0),
-                            filename="%s/%s/%i_%s.png" % (save_path, args.name, epoch, mode))
-        return {}
+    from handlers import (image_handler_default,
+                          image_handler_blank,
+                          image_handler_vae,
+                          image_handler_ae,
+                          dsprite_handler,
+                          test_set_handler)
 
-    def image_handler_vae(losses, batch, outputs, kwargs):
-        if kwargs['iter'] == 1:
-            if kwargs['epoch'] % args.save_images_every == 0:
-                mode = kwargs['mode']
-                epoch = kwargs['epoch']
-                input1 = outputs['input']*0.5 + 0.5
-                recon1 = outputs['recon']*0.5 + 0.5
-                sample = outputs['sample']*0.5 + 0.5
-                imgs = torch.cat((input1, recon1, sample))
-                save_image( imgs,
-                            nrow=input1.size(0),
-                            filename="%s/%s/%i_%s.png" % (save_path, args.name, epoch, mode))
-        return {}
+    if args.name is None:
+        name = generate_name_from_args(args_dict, KWARGS_FOR_NAME)
+        print("args.name is `None`, so generating a name instead:\n  " +
+              name)
+        args.name = name
 
-    def image_handler_ae(losses, batch, outputs, kwargs):
-        if kwargs['iter'] == 1:
-            if kwargs['epoch'] % args.save_images_every == 0:
-                mode = kwargs['mode']
-                epoch = kwargs['epoch']
-                input1 = outputs['input']*0.5 + 0.5
-                recon1 = outputs['recon']*0.5 + 0.5
-                imgs = torch.cat((input1, recon1))
-                save_image( imgs,
-                            nrow=input1.size(0),
-                            filename="%s/%s/%i_%s.png" % (save_path, args.name, epoch, mode))
-        return {}
+    expt_dir = "%s/%s" % (save_path, args.name)
+    if not os.path.exists(expt_dir):
+        os.makedirs(expt_dir)
 
-    def image_handler_blank(losses, batch, outputs, kwargs):
-        return {}
+    # Save the yaml args to the experiment dir
+    with open("%s/cfg.yaml" % expt_dir, "w") as f_yaml:
+        f_yaml.write(args_yaml)
 
     if args.model == 'swapgan':
         gan_class = TwoGAN
         image_handler = image_handler_default
-    elif args.model == 'swapgan_pair':
-        """
-        if args.dataset not in PAIR_SWAPGAN_SUPPORTED_DATASETS:
-            raise Exception("PairSwapGAN currently only works with these datasets: %s" % \
-                            PAIR_SWAPGAN_SUPPORTED_DATASETS)
-        gan_class = PairSwapGAN
-        image_handler = image_handler_swapgan
-        """
-        raise NotImplementedError()
-    elif args.model == 'acaif':
-        gan_class = ACAIF
-        image_handler = image_handler_default
     elif args.model == 'acaif2':
         gan_class = ACAIF2
         image_handler = image_handler_default
-    elif args.model == 'tester':
-        from models.tester import Tester
-        gan_class = Tester
+    elif args.model == 'acaif3':
+        gan_class = ACAIF3
         image_handler = image_handler_default
     elif args.model == 'threegan':
         gan_class = ThreeGAN
-        image_handler = image_handler_default
-    elif args.model == 'fourgan':
-        gan_class = FourGAN
         image_handler = image_handler_default
     elif args.model == 'kgan':
         if args.k is None:
             raise Exception("`k` must be > 0 for KGAN")
         gan_class = partial(KGAN, k=args.k)
-        image_handler = image_handler_default
-    elif args.model == 'pixel_arae':
-        gan_class = PixelARAE
         image_handler = image_handler_default
     elif args.model == 'classifier':
         gan_class = ClassifierOnly
@@ -621,52 +641,26 @@ if __name__ == '__main__':
         gan_class = AE
         image_handler = image_handler_ae
 
-    handlers = [image_handler]
+    handlers = [
+        image_handler(save_path=expt_dir,
+                      save_images_every=args.save_images_every)
+    ]
     if args.dataset == 'dsprite':
-        # Add the disentanglement metric here.
-        def dsprite_handler(gen, dataset):
-            def image_handler_vae(losses, batch, outputs, kwargs):
-                is_vae = True if args.model == 'vae' else False
-                if kwargs['iter'] == 1 and kwargs['mode'] == 'valid':
-                    return dsprite_disentanglement_fv(gen,
-                                                      dataset,
-                                                      is_vae=is_vae)
-                return {}
-            return image_handler_vae
-        handlers.append( dsprite_handler(gen, ds_train) )
+        is_vae = True if args.model == 'vae' else False
+        handlers.append(
+            dsprite_handler(gen=gen,
+                            dataset=ds_train,
+                            is_vae=is_vae)
+        )
 
     cls_enc = None
     if args.cls_probe is not None:
         mod_cls = import_module(args.cls_probe.replace("/", ".").\
-                            replace(".py", ""))
+                                replace(".py", ""))
         cls_enc = mod_cls.get_network(**eval(args.cls_probe_args))
         print("Classifier probe:")
-        print(cls_enc)
-        print("# params: %i" % count_params(cls_enc))
-
-        # Add the handler to compute predictions on test set
-        # at start of each epoch.
-        def test_set_handler(gen, cls, dataset):
-            def _test_set_handler(losses, batch, outputs, kwargs):
-                # Compute at the start of the validation run.
-                if kwargs['iter'] == 1 and kwargs['mode'] == 'valid':
-                    dest_dir = "%s/%s/test_preds" % (save_path, args.name)
-                    if not os.path.exists(dest_dir):
-                        os.makedirs(dest_dir)
-                    instances = []
-                    for b, (x_batch, y_batch) in enumerate(dataset):
-                        x_batch = x_batch.cuda()
-                        enc_batch = gen.encoder(x_batch)
-                        enc_batch = enc_batch.view(-1, np.prod(enc_batch.shape[1:]))
-                        preds_batch = cls(enc_batch).argmax(dim=1)
-                        y_labels = y_batch.argmax(dim=1)
-                        instances.append({'pred': preds_batch, 'labels': y_labels})
-                    with open("%s/%i.pkl" % (dest_dir, kwargs['epoch']), 'wb') as f:
-                        pickle.dump(instances, f)
-
-                return {}
-            return _test_set_handler
-        handlers.append( test_set_handler(gen, cls_enc, loader_test) )
+        print("  " + str(cls_enc).replace("\n", "\n  "))
+        print("  # params: %i" % count_params(cls_enc))
 
     # TODO: check for BaseAE, not VAE
     if gan_class not in [VAE, AE]:
@@ -711,22 +705,28 @@ if __name__ == '__main__':
         if args.load_nonstrict:
             gan.load_strict = False
 
+    if args.cls_probe is not None and loader_test is not None:
+        # If we have a linear classifier probe turned on and
+        # a test set exists, assume that we want to also make
+        # test set classifications per epoch (these will be
+        # periodically saved to disk, and not seen during training).
+        handlers.append(
+            test_set_handler(
+                gan=gan,
+                dataset=loader_test,
+                save_path="%s/%s/test_preds" % (save_path, args.name)
+            )
+        )
+
+
     latest_model = None
     cpt_name = 'none'
     if args.resume is not None:
         model_dir = "%s/%s" % (save_path, args.name)
         if args.resume == 'auto':
             # autoresume
-
-            # List all the pkl files.
-            files = glob.glob("%s/*.pkl" % model_dir)
-            # Make them absolute paths.
-            files = [os.path.abspath(key) for key in files]
-            if len(files) > 0:
-                # Get creation time and use that.
-                latest_model = max(files, key=os.path.getctime)
-                print("Auto-resume mode found latest model: %s" %
-                      latest_model)
+            latest_model = find_latest_pkl_in_folder(model_dir)
+            if latest_model is not None:
                 gan.load(latest_model)
         elif args.resume.isdigit():
             gan.load("%s/%s.pkl" % (model_dir, args.resume))
@@ -737,22 +737,6 @@ if __name__ == '__main__':
         else:
             cpt_name = os.path.basename(args.resume)
 
-    expt_dir = "%s/%s" % (save_path, args.name)
-    if not os.path.exists(expt_dir):
-        os.makedirs(expt_dir)
-
-    from subprocess import check_output
-    args_file = "%s/args.txt" % expt_dir
-    f_mode = 'w' if not os.path.exists(args_file) else 'a'
-    with open(args_file, f_mode) as f_args:
-        f_args.write("argparse: %s\n" % str(args))
-        if latest_model is not None:
-            f_args.write("latest_model = %s" % latest_model)
-        git_branch = check_output("git rev-parse --symbolic-full-name --abbrev-ref HEAD", shell=True)
-        git_branch = git_branch.decode('utf-8').rstrip()
-        f_args.write("git_branch: %s\n" % git_branch)
-
-
     if args.mode == 'train':
 
         gan.train(itr_train=loader_train,
@@ -761,20 +745,6 @@ if __name__ == '__main__':
                   model_dir=expt_dir,
                   result_dir=expt_dir,
                   save_every=args.save_every)
-
-    #elif 'consistency' in args.mode:
-    #
-    #    batch = iter(loader_train).next()
-    #    if len(batch) == 3:
-    #        x_batch, y_batch = batch[0:2], batch[2::]
-    #    else:
-    #        x_batch, y_batch = batch[0], batch[1]
-    #    if use_cuda:
-    #        x_batch = x_batch.cuda()
-    #        y_batch = y_batch.cuda()
-    #
-    #    out_dir = "%s/%s/%s/%s/model-%s/" % (save_path, args.name, args.mode, args.mixer, cpt_name)
-    #    save_consistency_plot(gan, x_batch, out_dir)
 
     elif 'interp' in args.mode:
 
