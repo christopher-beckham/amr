@@ -1,5 +1,3 @@
-# Source: https://github.com/eriklindernoren/PyTorch-GAN/blob/master/implementations/stargan/datasets.py
-
 import glob
 import random
 import os
@@ -21,8 +19,7 @@ class CelebADataset(Dataset):
                  ids=None,
                  transforms_=None,
                  mode='train',
-                 attrs=[],
-                 missing_ind=False):
+                 attrs=[]):
         self.transform = transforms.Compose(transforms_)
         if ids is None:
             self.files = sorted(glob.glob('%s/*.jpg' % root))
@@ -31,9 +28,10 @@ class CelebADataset(Dataset):
             self.files = ["%s/%s.jpg" % (root, id_) for id_ in ids_file]
         self.files = self.files[:-2000] if mode == 'train' else self.files[-2000:]
         self.label_path = "%s/list_attr_celeba.txt" % root
-        self.missing_ind = missing_ind
         self.annotations = self.get_annotations(attrs)
         self.keys1 = list(self.annotations.keys())
+        self.attrs = attrs
+        print("Attributes passed to CelebADataset:", attrs)
 
     def get_annotations(self, attrs):
         """Extracts annotations for CelebA"""
@@ -46,13 +44,6 @@ class CelebADataset(Dataset):
             for attr in attrs:
                 idx = self.label_names.index(attr)
                 labels.append(1 * (values[idx] == '1'))
-            if self.missing_ind:
-                # Basically add a label saying this is the
-                # 'everything else' class.
-                if 1 not in labels:
-                    labels.append(1)
-                else:
-                    labels.append(0)
             annotations[filename] = labels
         return annotations
 

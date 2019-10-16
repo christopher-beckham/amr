@@ -28,19 +28,22 @@ from torchvision.transforms import transforms
 from PIL import Image
 from torchvision.utils import save_image
 
+# TODO: cleanup
 from models.swapgan import SwapGAN
 from models.amr_classifier import ClassifierOnly
 from models.acai_f2 import ACAIF2
 from models.acai_f3 import ACAIF3
 from models.threegan import ThreeGAN
 from models.twogan import TwoGAN
+from models.twogan_supervised import TwoGANSupervised
 from models.kgan import KGAN
 from models.vae import VAE
 from models.ae import AE
 
 from functools import partial
 from importlib import import_module
-from tools import (generate_name_from_args,
+from tools import (dotdict,
+                   generate_name_from_args,
                    generate_tsne,
                    find_latest_pkl_in_folder,
                    compute_inception,
@@ -75,7 +78,8 @@ basename = lambda x: os.path.basename(x)
 KWARGS_FOR_NAME = {
     'model': ('model', id_),
     'dataset': ('ds', id_),
-    'subset_train': ('sub', id_),
+    'dataset_args': ('ds_args', dict2line),
+    'subset_train': ('n', id_),
     'network': ('arch', basename),
     'batch_size': ('bs', id_),
     'n_channels': ('nc', id_),
@@ -85,10 +89,10 @@ KWARGS_FOR_NAME = {
     'lamb': ('lamb', id_),
     'cls': ('cls', id_),
     'k': ('k', id_),
-    'mixer': ('mixer', id_),
+    'mixer': ('mix', id_),
     'disable_g_recon': ('dgr', id_),
     'disable_mix': ('no_mix', id_),
-    'eps': ('m_eps', id_),
+    #'eps': ('m_eps', id_),
     'cls_loss': ('c_l', id_),
     'gan_loss': ('g_l', id_),
     'recon_loss': ('r_l', id_),
@@ -96,13 +100,12 @@ KWARGS_FOR_NAME = {
     'update_g_every': ('g', id_),
     'beta1': ('b1', id_),
     'beta2': ('b2', id_),
-    'cls_probe': ('probe', basename),
-    'cls_probe_args': ('probe_args', dict2line),
-    'cls_probe_weight_decay': ('probe_wd', id_),
-    'bpc': ('bpc', id_),
+    'cls_probe': ('prb', basename),
+    'cls_probe_args': ('prb_args', dict2line),
+    'cls_probe_weight_decay': ('prb_wd', id_),
+    #'bpc': ('bpc', id_),
     'trial_id': ('_trial', id_)
 }
-
 
 def get_shuffled_indices(length):
     rnd_state = np.random.RandomState(0)
@@ -110,195 +113,260 @@ def get_shuffled_indices(length):
     rnd_state.shuffle(idxs)
     return idxs
 
+DO_NOT_EXPORT = ['trial_id',
+                 'config',
+                 'which',
+                 'name',
+                 'epochs',
+                 'save_path',
+                 'val_batch_size',
+                 'save_every',
+                 'save_images_every',
+                 'resume',
+                 'load_nonstrict',
+                 'no_verbose',
+                 'num_workers',
+                 'vis_seed',
+                 'mode',
+                 'mode_override']
+
 if __name__ == '__main__':
 
     def parse_args():
         parser = argparse.ArgumentParser(description="")
-        parser.add_argument('--name', type=str, default=None,
-                            help="""The name of the experiment. If this is `None`,
-                            then a name is automatically generated from the specified
-                            args (recommended).
-                            """)
-        parser.add_argument('--model', type=str, default='swapgan',
-                            choices=['swapgan',
-                                     'acai', 'acaif', 'acaif2', 'acaif3', 'tester',
-                                     'acai_softmax',
-                                     'threegan',
-                                     'fourgan',
-                                     'kgan',
-                                     'pixel_arae',
-                                     'vae',
-                                     'ae',
-                                     'classifier'])
-        parser.add_argument('--dataset', type=str, default='celeba',
-                            choices=['celeba',
-                                     'celeba32',
-                                     'celeba_hq',
-                                     'cifar10',
-                                     'tiny-imagenet',
-                                     'zappos',
-                                     'zappos_cls',
-                                     'zappos_hq',
-                                     'flowers',
-                                     'mnist',
-                                     'mnist012_small',
-                                     'mnist_small',
-                                     'kmnist',
-                                     'svhn',
-                                     'dsprite',
-                                     'dsprite64',
-                                     'fashiongen'],
-                            help="""
-                            celeba = CelebA (64px) (set env var DATASET_CELEBA)
-                            celeba32 = CelebA (32px) (set env var DATASET_CELEBA)
-                            celeba_hq = CelebA-HQ (128px) (set env DATASET_CELEBAHQ)
-                            zappos = Zappos shoe dataset (64px) (set env var DATASET_ZAPPOS)
-                            zappos_cls = Zappos for classification (64px, fix shuffle bug)
-                            zappos_hq = Zappos shoe dataset (128px) (set env var DATASET_ZAPPOSHQ)
-                            flowers = TODO (64px)
-                            mnist = MNIST (32px)
-                            mnist012_small = MNIST for only digits 0,1,2 (16px)
-                            mnist_small = MNIST (16px)
-                            kmnist = KNIST (32px)
-                            svhn = SVHN (32px)
-                            fashiongen = TODO
-                            """)
-        parser.add_argument('--subset_train', type=int, default=None,
-                            help="""If set, artficially decrease the size of the training
-                            data. Use this to easily perform data ablation experiments.""")
-        parser.add_argument('--attr_file', type=str,
-                            default="attr_cfgs/all.txt")
-        parser.add_argument('--arch', type=str,
-                            default='architectures/arch_celeba.py')
-        parser.add_argument('--batch_size', type=int, default=32)
-        parser.add_argument('--epochs', type=int, default=200)
-        parser.add_argument('--n_channels', type=int, default=3,
-                            help="""Number of input channels in image. This is
-                            "passed to the `get_network` function defined by
-                            "`--arch`.""")
-        parser.add_argument('--ngf', type=int, default=64,
-                            help="""# channel multiplier for the autoencoder. This
-                            "is passed to the `get_network` function defined by
-                            `--arch`.""")
-        parser.add_argument('--ndf', type=int, default=64,
-                            help="""# channel multiplier for the discriminator. This
-                            is passed to the `get_network` function defined by
-                            `--arch`.""")
-        parser.add_argument('--lr', type=float, default=2e-4, help="Learning rate")
-        parser.add_argument('--lamb', type=float, default=1.0,
-                            help="""Weight for reconstruction loss between x
-                            "and its reconstruction.""")
-        parser.add_argument('--beta', type=float, default=1.0,
-                            help="""Weight for consistency loss between enc(x) and
-                            enc(dec(enc(x)))""")
-        parser.add_argument('--cls', type=float, default=0.,
-                            help="""If > 0, then the supervised mixing losses
-                            will be enabled. This is also the weight of the loss
-                            term which tries to fool the auxiliary classifier with
-                            mixes generated by the class mixing function.""")
-        parser.add_argument('--k', type=int, default=None, help="For kgan only")
+
+        subparsers = parser.add_subparsers(
+            help='Either load args from a config or specify them on the command line',
+            dest='which')
+
+        parser_load = subparsers.add_parser('load', help='Run from a YAML file')
+        parser_load.add_argument('--config', type=str, default=None)
+
+        # load = load from a yaml file
+        # run
+        parser_run = subparsers.add_parser('run', help='Run from the command line')
+
+        parser_run.add_argument('--model', type=str, default='swapgan',
+                                choices=['swapgan',
+                                         'acai', 'acaif', 'acaif2', 'acaif3', 'tester',
+                                         'threegan',
+                                         'supervised',
+                                         'kgan',
+                                         'pixel_arae',
+                                         'vae',
+                                         'ae',
+                                         'classifier'])
+        parser_run.add_argument('--dataset', type=str, default='celeba',
+                                choices=['celeba',
+                                         'celeba32',
+                                         'celeba_hq',
+                                         'cifar10',
+                                         'tiny-imagenet',
+                                         'zappos',
+                                         'zappos_cls',
+                                         'zappos_hq',
+                                         'flowers',
+                                         'mnist',
+                                         'mnist012_small',
+                                         'mnist_small',
+                                         'kmnist',
+                                         'svhn',
+                                         'dsprite',
+                                         'dsprite64',
+                                         'fashiongen'],
+                                help="""
+                                celeba = CelebA (64px) (set env var DATASET_CELEBA)
+                                celeba32 = CelebA (32px) (set env var DATASET_CELEBA)
+                                celeba_hq = CelebA-HQ (128px) (set env DATASET_CELEBAHQ)
+                                zappos = Zappos shoe dataset (64px) (set env var DATASET_ZAPPOS)
+                                zappos_cls = Zappos for classification (64px, fix shuffle bug)
+                                zappos_hq = Zappos shoe dataset (128px) (set env var DATASET_ZAPPOSHQ)
+                                flowers = TODO (64px)
+                                mnist = MNIST (32px)
+                                mnist012_small = MNIST for only digits 0,1,2 (16px)
+                                mnist_small = MNIST (16px)
+                                kmnist = KNIST (32px)
+                                svhn = SVHN (32px)
+                                fashiongen = TODO
+                                """)
+        parser_run.add_argument('--dataset_args', type=str,
+                                default=None,
+                                help="""Extra args to pass to the dataset class.""")
+        parser_run.add_argument('--subset_train', type=int, default=None,
+                                help="""If set, artficially decrease the size of the training
+                                data. Use this to easily perform data ablation experiments.""")
+        parser_run.add_argument('--arch', type=str,
+                                default='architectures/arch_celeba.py')
+        parser_run.add_argument('--batch_size', type=int, default=32)
+        parser_run.add_argument('--n_channels', type=int, default=3,
+                                help="""Number of input channels in image. This is
+                                "passed to the `get_network` function defined by
+                                "`--arch`.""")
+        parser_run.add_argument('--ngf', type=int, default=64,
+                                help="""# channel multiplier for the autoencoder. This
+                                "is passed to the `get_network` function defined by
+                                `--arch`.""")
+        parser_run.add_argument('--ndf', type=int, default=64,
+                                help="""# channel multiplier for the discriminator. This
+                                is passed to the `get_network` function defined by
+                                `--arch`.""")
+        parser_run.add_argument('--lr', type=float, default=2e-4, help="Learning rate")
+        parser_run.add_argument('--lamb', type=float, default=1.0,
+                                help="""Weight for reconstruction loss between x
+                                "and its reconstruction.""")
+        parser_run.add_argument('--beta', type=float, default=1.0,
+                                help="""Weight for consistency loss between enc(x) and
+                                enc(dec(enc(x)))""")
+        parser_run.add_argument('--cls', type=float, default=0.,
+                                help="""If > 0, then the supervised mixing losses
+                                will be enabled. This is also the weight of the loss
+                                term which tries to fool the auxiliary classifier with
+                                mixes generated by the class mixing function.""")
+        parser_run.add_argument('--k', type=int, default=None, help="For kgan only")
         # TENPORARY
-        parser.add_argument('--sigma', type=float, default=0., help="dropout p")
-        parser.add_argument('--eps', type=float, default=1e-8, help="For supervised formulation")
+        parser_run.add_argument('--sigma', type=float, default=0., help="dropout p")
+        parser_run.add_argument('--eps', type=float, default=1e-8, help="For supervised formulation")
         # ---------
-        parser.add_argument('--mixer', type=str, choices=['mixup', 'mixup2', 'fm', 'fm2'],
-                            help="""The mixing function to use. Choices are 'mixup',
-                            "'mixup2', and 'fm'. 'mixup' will sample an alpha ~ U(0,1)
-                            "in the shape (bs,1,1,1), 'mixup2' will sample an alpha ~ U(0,1)
-                            "in the shape (bs,f,1,1) and 'fm' will sample an m ~ Bern(p)
-                            "(p ~ U(0,1)) in the shape (bs,f,1,1).""")
-        parser.add_argument('--disable_g_recon', action='store_true')
-        parser.add_argument('--disable_mix', action='store_true')
-        parser.add_argument('--cls_loss', type=str, default='bce',
-                            choices=['bce', 'mse'],
-                            help="""The loss function to use for the auxiliary classifier
-                            component (if cls > 0). The choices are 'bce' (binary 
-                            cross-entropy) or 'mse' (mean-squared error).""")
-        parser.add_argument('--gan_loss', type=str, default='bce',
-                            choices=['bce', 'mse'],
-                            help="""The loss function to use for the GAN component. The 
-                            choices are 'bce' (binary cross-entropy) or 'mse' (mean-squared 
-                            error).""")
-        parser.add_argument('--recon_loss', type=str, default='l1',
-                            choices=['l1', 'l2', 'bce', 'bce_sum'],
-                            help="""The loss function to use for the reconstruction component. The
-                            choices are 'bce' (binary cross-entropy) or 'l1' (L1 loss).""")
-        parser.add_argument('--beta1', type=float, default=0., help="beta1 term of ADAM")
-        parser.add_argument('--beta2', type=float, default=0.999, help="beta2 term of ADAM")
-        parser.add_argument('--weight_decay', type=float, default=0.0,
-                            help="""L2 weight decay on params (note: applies to optimisers for both
-                            the generator, discriminator, and classifier probe (if set)""")
-        parser.add_argument('--update_g_every', type=int, default=5)
-        parser.add_argument('--cls_probe', type=str, default=None,
-                            help="""Architecture for classifier to branch off the bottleneck
-                            (if you are performing downstream classification)""")
-        parser.add_argument('--cls_probe_args', type=str, default=None, help="python dict")
-        parser.add_argument('--cls_probe_weight_decay', type=float, default=0,
-                            help="Weight decay term specifically for cls_probe optimiser")
-        parser.add_argument('--cls_probe_weight', type=float, default=1,
-                            help="")
-        parser.add_argument('--bpc', action='store_true',
-                            help="""If set to true, the classifier probe can backprop gradients
-                            back into the autoencoder""")
-        parser.add_argument('--save_path', type=str, default=None)
-        parser.add_argument('--val_batch_size', type=int, default=64)
-        parser.add_argument('--save_every', type=int, default=5)
-        parser.add_argument('--save_images_every', type=int, default=1)
-        parser.add_argument('--resume', type=str, default=None)
-        parser.add_argument('--load_nonstrict', action='store_true')
-        parser.add_argument('--no_verbose', action='store_true')
-        parser.add_argument('--seed', type=int, default=0)
-        parser.add_argument('--vis_seed', type=int, default=0,
-                            help="Seed used for visualisation modes")
-        parser.add_argument('--num_workers', type=int, default=4)
-        parser.add_argument('--mode', type=str,
-                            choices=['train',
-                                     'interp_train',
-                                     'interp_valid',
-                                     'interp_pixel_train',
-                                     'interp_pixel_valid',
-                                     'interp_sup_train',
-                                     'interp_sup_valid',
-                                     'save_frames',
-                                     'tsne',
-                                     'fid_train',
-                                     'fid_valid',
-                                     'incep_train',
-                                     'incep_valid',
-                                     'embedding',
-                                     'logreg',
-                                     'class_embeddings',
-                                     'dump_g',
-                                     'dsprite_disentangle',
-                                     'dsprite_disentangle_fv',
-                                     'pdb'],
-                            default='train',
-                            help="""
-                            train = training
-                            interp_train = generate interpolations on samples
-                              from the training set.
-                            interp_valid = generate interpolations on samples
-                              from the validation set.
-                            interp_pixel_train = generate pixel space interps
-                              from the training set.
-                            interp_pixel_valid = generate pixel space interps
-                              from the valid set.
-                            interp_sup_train = generate interpolations on samples
-                              using the class mixer function, on the training set.
-                            interp_sup_valid = generate interpolations on samples
-                              using the class mixer function, on the valid set.
-                            """)
-        parser.add_argument('--mode_override', type=str, default=None)
-        #parser.add_argument('--cpu', action='store_true')
+        parser_run.add_argument('--mixer', type=str, choices=['mixup', 'mixup2', 'fm', 'fm2'],
+                                help="""The mixing function to use. Choices are 'mixup',
+                                "'mixup2', and 'fm'. 'mixup' will sample an alpha ~ U(0,1)
+                                "in the shape (bs,1,1,1), 'mixup2' will sample an alpha ~ U(0,1)
+                                "in the shape (bs,f,1,1) and 'fm' will sample an m ~ Bern(p)
+                                "(p ~ U(0,1)) in the shape (bs,f,1,1).""")
+        parser_run.add_argument('--disable_g_recon', action='store_true')
+        parser_run.add_argument('--disable_mix', action='store_true')
+        parser_run.add_argument('--cls_loss', type=str, default='bce',
+                                choices=['bce', 'mse'],
+                                help="""The loss function to use for the auxiliary classifier
+                                component (if cls > 0). The choices are 'bce' (binary 
+                                cross-entropy) or 'mse' (mean-squared error).""")
+        parser_run.add_argument('--gan_loss', type=str, default='bce',
+                                choices=['bce', 'mse'],
+                                help="""The loss function to use for the GAN component. The 
+                                choices are 'bce' (binary cross-entropy) or 'mse' (mean-squared 
+                                error).""")
+        parser_run.add_argument('--recon_loss', type=str, default='l1',
+                                choices=['l1', 'l2', 'bce', 'bce_sum'],
+                                help="""The loss function to use for the reconstruction component. The
+                                choices are 'bce' (binary cross-entropy) or 'l1' (L1 loss).""")
+        parser_run.add_argument('--beta1', type=float, default=0., help="beta1 term of ADAM")
+        parser_run.add_argument('--beta2', type=float, default=0.999, help="beta2 term of ADAM")
+        parser_run.add_argument('--weight_decay', type=float, default=0.0,
+                                help="""L2 weight decay on params (note: applies to optimisers for both
+                                the generator, discriminator, and classifier probe (if set)""")
+        parser_run.add_argument('--update_g_every', type=int, default=5)
+        parser_run.add_argument('--cls_probe', type=str, default=None,
+                                help="""Architecture for classifier to branch off the bottleneck
+                                (if you are performing downstream classification)""")
+        parser_run.add_argument('--cls_probe_args', type=str, default=None, help="python dict")
+        parser_run.add_argument('--cls_probe_weight_decay', type=float, default=0,
+                                help="Weight decay term specifically for cls_probe optimiser")
+        parser_run.add_argument('--cls_probe_weight', type=float, default=1,
+                                help="")
+        parser_run.add_argument('--bpc', action='store_true',
+                                help="""If set to true, the classifier probe can backprop gradients
+                                back into the autoencoder""")
+        parser_run.add_argument('--seed', type=int, default=0)
+
+        for parser_obj in [parser_run, parser_load]:
+
+            parser_obj.add_argument('--name', type=str, default=None,
+                                    help="""The name of the experiment. If this is `None`,
+                                    then a name is automatically generated from the specified
+                                    args (recommended).
+                                    """)
+            parser_obj.add_argument('--epochs', type=int, default=200)
+            parser_obj.add_argument('--trial_id', type=str, default=None)
+            parser_obj.add_argument('--save_path', type=str, default=None)
+            parser_obj.add_argument('--val_batch_size', type=int, default=64)
+            parser_obj.add_argument('--save_every', type=int, default=5)
+            parser_obj.add_argument('--save_images_every', type=int, default=1)
+            parser_obj.add_argument('--resume', type=str, default=None)
+            parser_obj.add_argument('--load_nonstrict', action='store_true')
+            parser_obj.add_argument('--no_verbose', action='store_true')
+            parser_obj.add_argument('--vis_seed', type=int, default=0,
+                                help="Seed used for visualisation modes")
+            parser_obj.add_argument('--num_workers', type=int, default=4)
+            parser_obj.add_argument('--mode', type=str,
+                                    choices=['train',
+                                             'interp_train',
+                                             'interp_valid',
+                                             'interp_pixel_train',
+                                             'interp_pixel_valid',
+                                             'interp_sup_train',
+                                             'interp_sup_valid',
+                                             'save_frames',
+                                             'tsne',
+                                             'fid_train',
+                                             'fid_valid',
+                                             'incep_train',
+                                             'incep_valid',
+                                             'embedding',
+                                             'logreg',
+                                             'class_embeddings',
+                                             'dump_g',
+                                             'dsprite_disentangle',
+                                             'dsprite_disentangle_fv',
+                                             'pdb'],
+                                    default='train',
+                                    help="""
+                                    train = training
+                                    interp_train = generate interpolations on samples
+                                      from the training set.
+                                    interp_valid = generate interpolations on samples
+                                      from the validation set.
+                                    interp_pixel_train = generate pixel space interps
+                                      from the training set.
+                                    interp_pixel_valid = generate pixel space interps
+                                      from the valid set.
+                                    interp_sup_train = generate interpolations on samples
+                                      using the class mixer function, on the training set.
+                                    interp_sup_valid = generate interpolations on samples
+                                      using the class mixer function, on the valid set.
+                                    """)
+            parser_obj.add_argument('--mode_override', type=str, default=None)
+
         args = parser.parse_args()
         return args
 
     args = parse_args()
 
+    args_dict = vars(args) # NOTE: this is a view, not a copy of `args`
+
+    # If the config subparser was chosen, then `args` must be deserialised
+    # from the file, otherwise continue.
+    if args.which == 'load':
+
+        print("args.which == load, so loading from config...")
+        loaded_dict = yaml.load(open(args.config))
+        #print("Loaded dict: ", loaded_dict)
+
+        for key in loaded_dict:
+            # We assume '' or 'true' ==> a boolean.
+            if type(loaded_dict[key]) == str:
+                if loaded_dict[key].lower() == 'true':
+                    loaded_dict[key] = True
+                elif loaded_dict[key].lower() == 'false':
+                    loaded_dict[key] = False
+                elif loaded_dict[key].lower() == 'null':
+                    loaded_dict[key] = None
+
+        for key in loaded_dict:
+            if key not in DO_NOT_EXPORT:
+                args_dict[key] = loaded_dict[key]
+            else:
+                print("WARNING: unknown key `%s` is specified in yaml, ignoring..." % key)
+
+    # Make a copy of the args dict, remove
+    # the stuff that isn't needed for the
+    # exported config, then export
+    args_dict_copy = dict(args_dict)
+    for key in DO_NOT_EXPORT:
+        if key in args_dict:
+            del args_dict_copy[key]
+    args_dict_copy_yaml = yaml.dump(args_dict_copy)
     print("Arguments:")
-    args_dict = vars(args)
-    args_yaml = yaml.dump(args_dict)
-    print("  " + args_yaml.replace("\n","\n  "))
+    print("  " + args_dict_copy_yaml.replace("\n", "\n  "))
 
     if args.mode == 'train':
         torch.manual_seed(args.seed)
@@ -306,13 +374,8 @@ if __name__ == '__main__':
     use_cuda = True if torch.cuda.is_available() else False
 
     ds_test = None
+    ds_kwargs = eval(args.dataset_args) if args.dataset_args is not None else {}
     if args.dataset == 'celeba' or args.dataset == 'celeba32':
-        # TODO: clean this up a bit
-        with open(args.attr_file) as f:
-            attrs = f.readline().rstrip().split()
-        print("attrs = ")
-        for s in attrs:
-            print(" %s" % s)
         img_sz = 64 if args.dataset == 'celeba' else 32
         train_transforms = [
             transforms.Resize(img_sz),
@@ -323,17 +386,15 @@ if __name__ == '__main__':
         ids = "celeba_frontal.txt"
         ds_train = CelebADataset(root=os.environ['DATASET_CELEBA'],
                                  ids=ids,
-                                 attrs=attrs,
                                  transforms_=train_transforms,
-                                 missing_ind=False,
-                                 mode='train')
+                                 mode='train',
+                                 **ds_kwargs)
         ds_valid = CelebADataset(root=os.environ['DATASET_CELEBA'],
                                  ids=ids,
-                                 attrs=attrs,
                                  transforms_=train_transforms,
-                                 missing_ind=False,
-                                 mode='valid')
-        n_classes = len(attrs)
+                                 mode='valid',
+                                 **ds_kwargs)
+        n_classes = len(ds_train.attrs)
     elif args.dataset == 'celeba_hq':
         train_transforms = [
             transforms.ToTensor(),
@@ -342,11 +403,13 @@ if __name__ == '__main__':
         ds_train = CelebAHqDataset(root=os.environ['DATASET_CELEBAHQ'],
                                    ids="iterators/celebahq_frontal.txt",
                                    transforms_=train_transforms,
-                                   mode='train')
+                                   mode='train',
+                                   **ds_kwargs)
         ds_valid = CelebAHqDataset(root=os.environ['DATASET_CELEBAHQ'],
                                    ids="iterators/celebahq_frontal.txt",
                                    transforms_=train_transforms,
-                                   mode='valid')
+                                   mode='valid',
+                                   **ds_kwargs)
         n_classes = 0
     elif args.dataset == 'flowers':
         train_transforms = [
@@ -358,10 +421,12 @@ if __name__ == '__main__':
         ]
         ds_train = OxfordFlowers102Dataset(root=os.environ['DATASET_FLOWERS'],
                                            transforms_=train_transforms,
-                                           mode='train')
+                                           mode='train',
+                                           **ds_kwargs)
         ds_valid = OxfordFlowers102Dataset(root=os.environ['DATASET_FLOWERS'],
                                            transforms_=train_transforms,
-                                           mode='valid')
+                                           mode='valid',
+                                           **ds_kwargs)
         n_classes = 102
     elif args.dataset in ['zappos', 'zappos_hq']:
         sz = 64 if args.dataset == 'zappos' else 128
@@ -374,11 +439,13 @@ if __name__ == '__main__':
         ds_train = ZapposDataset(root=os.environ['DATASET_ZAPPOS'],
                                  ids="iterators/zappo_bg_stats.csv",
                                  transforms_=train_transforms,
-                                 mode='train')
+                                 mode='train',
+                                 **ds_kwargs)
         ds_valid = ZapposDataset(root=os.environ['DATASET_ZAPPOS'],
                                  ids="iterators/zappo_bg_stats.csv",
                                  transforms_=train_transforms,
-                                 mode='valid')
+                                 mode='valid',
+                                 **ds_kwargs)
         n_classes = 0
     elif args.dataset == 'zappos_cls':
         train_transforms = [
@@ -391,12 +458,14 @@ if __name__ == '__main__':
                                  ids=None,
                                  shuffle=True,
                                  transforms_=train_transforms,
-                                 mode='train')
+                                 mode='train',
+                                 **ds_kwargs)
         ds_valid = ZapposDataset(root=os.environ['DATASET_ZAPPOS'],
                                  ids=None,
                                  shuffle=True,
                                  transforms_=train_transforms,
-                                 mode='valid')
+                                 mode='valid',
+                                 **ds_kwargs)
         n_classes = 21
     elif args.dataset in ['mnist', 'mnist012_small', 'mnist_small']:
         if args.dataset == 'mnist':
@@ -477,7 +546,8 @@ if __name__ == '__main__':
 
         ds_train_and_valid = TinyImagenetDataset(root=os.environ['DATASET_TINY_IMAGENET'],
                                                  transforms_=this_transform,
-                                                 mode='train')
+                                                 mode='train',
+                                                 **ds_kwargs)
         idxs = get_shuffled_indices(len(ds_train_and_valid))
         ds_train = Subset(ds_train_and_valid, indices=idxs[0:int(len(idxs)*0.9)])
         ds_valid = Subset(ds_train_and_valid, indices=idxs[int(len(idxs)*0.9)::])
@@ -486,7 +556,8 @@ if __name__ == '__main__':
         # don't exist publicly.
         ds_test = TinyImagenetDataset(root=os.environ['DATASET_TINY_IMAGENET'],
                                       transforms_=this_transform,
-                                      mode='valid')
+                                      mode='valid',
+                                      **ds_kwargs)
         n_classes = 200
     elif args.dataset == 'cifar10':
         ds_train_valid = CifarDatasetOneHot('iterators', train=True, download=True,
@@ -509,7 +580,9 @@ if __name__ == '__main__':
                                      ]))
         n_classes = 10
     elif args.dataset == 'dsprite':
-        ds_train = DSpriteDataset(root='iterators', seed=args.seed)
+        ds_train = DSpriteDataset(root='iterators',
+                                  seed=args.seed,
+                                  **ds_kwargs)
         """
         ds_valid = DSpriteDataset('iterators', split='test', download=True,
                                      transform=transforms.Compose([
@@ -529,10 +602,12 @@ if __name__ == '__main__':
         ]
         ds_train = FashionGenDataset(root=os.environ['DATASET_FASHIONGEN'],
                                      transforms_=train_transforms,
-                                     mode='train')
+                                     mode='train',
+                                     **ds_kwargs)
         ds_valid = FashionGenDataset(root=os.environ['DATASET_FASHIONGEN'],
                                      transforms_=train_transforms,
-                                     mode='valid')
+                                     mode='valid',
+                                     **ds_kwargs)
         n_classes = 0
 
     if args.subset_train is not None:
@@ -565,8 +640,8 @@ if __name__ == '__main__':
                                  num_workers=1)
 
     if args.save_path is None:
-        print("`save_path` not specified, so retrieving from $RESULTS_DIR...")
-        args.save_path = os.environ['RESULTS_DIR']
+        print("`save_path` not specified, so retrieving from $SAVE_PATH...")
+        args.save_path = os.environ['SAVE_PATH']
     if args.seed == 0:
         save_path = args.save_path
     else:
@@ -609,13 +684,17 @@ if __name__ == '__main__':
     expt_dir = "%s/%s" % (save_path, args.name)
     if not os.path.exists(expt_dir):
         os.makedirs(expt_dir)
+    print("Experiment dir: %s" % expt_dir)
 
     # Save the yaml args to the experiment dir
     with open("%s/cfg.yaml" % expt_dir, "w") as f_yaml:
-        f_yaml.write(args_yaml)
+        f_yaml.write(args_dict_copy_yaml)
 
     if args.model == 'swapgan':
         gan_class = TwoGAN
+        image_handler = image_handler_default
+    elif args.model == 'supervised':
+        gan_class = TwoGANSupervised
         image_handler = image_handler_default
     elif args.model == 'acaif2':
         gan_class = ACAIF2
