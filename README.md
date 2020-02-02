@@ -22,6 +22,8 @@ https://docs.anaconda.com/anaconda/install/linux/
 3. Activate the new conda environment:
 `$ conda activate amr`
 
+(Note: this was my dev environment exported directly to yaml, and may contain a lot of unnecessary dependencies. If you want a more clean environment, it shouldn't be too hard to start from scratch -- all of the dependencies can be easily downloaded with either `pip` or `conda`.)
+
 ### Getting the data
 
 For most of the experiments, there is no need to download external datasets since they are already provided `torchvision` (namely, MNIST and SVHN). The exception to this is the DSprites dataset (used for the disentanglement experiments). In order to download this, simply do:
@@ -54,8 +56,6 @@ results folder. The number of samples used for interpolation is dependent on `--
   - The main changes we make is that we add spectral norm to the discriminator to stabilise GAN training. We also added instance norm to the generator to stabilise training.
   - Generator code: https://github.com/christopher-beckham/amr/blob/dev/architectures/arch_kyle.py#L21-L96
   - Discriminator code: https://github.com/christopher-beckham/amr/blob/dev/architectures/arch_kyle.py#L98-L108
-- ACAI's regularisation term has not been implemented, so it's not a completely faithful reproduction of their model. We will address this issue.
-- Having batch norm in the generator appears to generate funky artifacts (or at least it was the case on our qualitative experiments on CelebA/Zappos in the paper). Instead we opted for instance norm.
 
 ## Troubleshooting
 
