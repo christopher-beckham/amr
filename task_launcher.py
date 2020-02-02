@@ -6,6 +6,8 @@ import os
 import numpy as np
 import pickle
 import yaml
+import random
+import string
 
 from torch import nn
 from torch.utils.data import (DataLoader,
@@ -42,12 +44,8 @@ from models.ae import AE
 
 from functools import partial
 from importlib import import_module
-from tools import (dotdict,
-                   generate_name_from_args,
-                   generate_tsne,
+from tools import (
                    find_latest_pkl_in_folder,
-                   compute_inception,
-                   compute_fid,
                    train_logreg,
                    save_embedding,
                    save_class_embedding,
@@ -62,50 +60,6 @@ from tools import (dotdict,
 
 
 from models.classifier import Classifier
-
-# This dictionary's keys are the ones that are used
-# to auto-generate the experiment name. The values
-# of those keys are tuples, the first element being
-# shortened version of the key (e.g. 'dataset' -> 'ds')
-# and a function which may optionally shorten the value.
-id_ = lambda x: str(x)
-dict2line = lambda x: x.replace(" ", "").\
-    replace('"', '').\
-    replace("'", "").\
-    replace(":", "=").\
-    replace(",", ";")
-basename = lambda x: os.path.basename(x)
-KWARGS_FOR_NAME = {
-    'model': ('model', id_),
-    'dataset': ('ds', id_),
-    'dataset_args': ('ds_args', dict2line),
-    'subset_train': ('n', id_),
-    'network': ('arch', basename),
-    'batch_size': ('bs', id_),
-    'n_channels': ('nc', id_),
-    'ngf': ('ngf', id_),
-    'ndf': ('ndf', id_),
-    'lr': ('lr', id_),
-    'lamb': ('lamb', id_),
-    'cls': ('cls', id_),
-    'k': ('k', id_),
-    'mixer': ('mix', id_),
-    'disable_g_recon': ('dgr', id_),
-    'disable_mix': ('no_mix', id_),
-    #'eps': ('m_eps', id_),
-    'cls_loss': ('c_l', id_),
-    'gan_loss': ('g_l', id_),
-    'recon_loss': ('r_l', id_),
-    'weight_decay': ('wd', id_),
-    'update_g_every': ('g', id_),
-    'beta1': ('b1', id_),
-    'beta2': ('b2', id_),
-    'cls_probe': ('prb', basename),
-    'cls_probe_args': ('prb_args', dict2line),
-    'cls_probe_weight_decay': ('prb_wd', id_),
-    #'bpc': ('bpc', id_),
-    'trial_id': ('_trial', id_)
-}
 
 def get_shuffled_indices(length):
     rnd_state = np.random.RandomState(0)
@@ -271,9 +225,7 @@ if __name__ == '__main__':
         for parser_obj in [parser_run, parser_load]:
 
             parser_obj.add_argument('--name', type=str, default=None,
-                                    help="""The name of the experiment. If this is `None`,
-                                    then a name is automatically generated from the specified
-                                    args (recommended).
+                                    help="""The name of the experiment.
                                     """)
             parser_obj.add_argument('--epochs', type=int, default=200)
             parser_obj.add_argument('--trial_id', type=str, default=None)
@@ -675,13 +627,20 @@ if __name__ == '__main__':
                           dsprite_handler,
                           test_set_handler)
 
+    if args.trial_id is None:
+        trial_id = os.environ['SLURM_JOB_ID']
+        print("args.trial_id is `None`, so generating name from SLURM instead:\n  " +
+              trial_id)
+        args.trial_id = trial_id
+
     if args.name is None:
-        name = generate_name_from_args(args_dict, KWARGS_FOR_NAME)
-        print("args.name is `None`, so generating a name instead:\n  " +
+        name = ("".join([ random.choice(string.ascii_letters[0:26]) for j in range(5) ]))
+        print("args.name is `None`, so generating a random 5 digit code:\n  " +
               name)
         args.name = name
 
-    expt_dir = "%s/%s" % (save_path, args.name)
+    # e.g. expt_dir = /results/<experiment name>/<trial id>
+    expt_dir = "%s/%s/%s" % (save_path, args.name, trial_id)
     if not os.path.exists(expt_dir):
         os.makedirs(expt_dir)
     print("Experiment dir: %s" % expt_dir)
