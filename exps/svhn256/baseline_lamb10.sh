@@ -17,7 +17,6 @@ python task_launcher.py run \
 --beta=0.0 \
 --lamb=10.0 \
 --cls=0.0 \
---save_path=results_mixup \
 --mixer=mixup \
 --disable_mix \
 --seed=1 \
