@@ -24,7 +24,12 @@ https://docs.anaconda.com/anaconda/install/linux/
 
 ### Getting the data
 
-For this iteration of the code, there is no need to download external datasets since we will be using the ones provided with `torchvision` (namely, MNIST and SVHN).
+For most of the experiments, there is no need to download external datasets since they are already provided `torchvision` (namely, MNIST and SVHN). The exception to this is the DSprites dataset (used for the disentanglement experiments). In order to download this, simply do:
+
+```
+cd iterators
+wget https://github.com/deepmind/dsprites-dataset/raw/master/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz
+```
 
 ## Running experiments
 
