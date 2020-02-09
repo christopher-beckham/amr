@@ -18,7 +18,6 @@ python task_launcher.py run \
 --beta=0.0 \
 --lamb=10.0 \
 --cls=0.0 \
---save_path=results_mixup \
 --mixer=mixup \
 --seed=1 \
 --cls_probe=architectures/cls_probes/linear_legacy.py \

@@ -1,3 +1,9 @@
+"""
+Original code from Kyle McDonald:
+  https://gist.github.com/kylemcdonald/e8ca989584b3b0e6526c0a737ed412f0
+(Not sure what license...???)
+"""
+
 import torch
 from torch import nn
 import numpy as np

@@ -13,7 +13,6 @@ python task_launcher.py run \
 --resume=auto \
 --n_channels=1 \
 --ndf=16 \
---name=${NAME} \
 --batch_size=64 \
 --beta=100.0 \
 --lamb=1.0 \

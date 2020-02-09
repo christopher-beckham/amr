@@ -30,7 +30,8 @@ def test_set_handler(gan, dataset, save_path):
             cls = gan.cls_enc
             with torch.no_grad():
                 for b, (x_batch, y_batch) in enumerate(dataset):
-                    x_batch = x_batch.cuda()
+                    if gan.use_cuda:
+                        x_batch = x_batch.cuda()
                     enc_batch = gan.generator.encode(x_batch)
                     if hasattr(cls, 'legacy'):
                         enc_batch = enc_batch.view(-1, cls.n_in)
