@@ -11,7 +11,7 @@ In this paper, we explore new approaches to combining information encoded within
 ## Setting up the project
 
 ### Cloning the repository:
-`$ git clone <insert url here>`
+`$ git clone https://github.com/christopher-beckham/amr.git`
 
 ### Environment setup
 
