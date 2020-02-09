@@ -25,3 +25,7 @@ Script names refer to the following:
 - `ganXf`: mixup with k=X (e.g. `gan3f` = mix 3 examples at a time)
 - `ganXfm`: Bernoulli mixup with k=X
 - `acaif3`: ACAI
+
+## Notes
+
+- `--model=threegan` is an old class, which simply deals with the `k=3` case. The more up-to-date way of doing this would be to specify `--model=kgan` with `--k=X` (where `X` denotes the number of examples to mix between).
