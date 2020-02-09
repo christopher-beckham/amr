@@ -1,4 +1,6 @@
-## Folders
+## Experiments
+
+Experiments are located in the following directories:
 
 - For Table 1 (basic experiments, encoding dimension = 32)
   - `mnist`
@@ -14,7 +16,9 @@
   - `cifar10_1024` (encoding dimension 1024)
   - `svhn256` (encoding dimension 256)
 - For Table 4 (Dsprite experiments)
-  - TODO
+  - `dsprite`
+  
+Experiments are saved in the directory `<save path>/s<seed>/<name>/<trial id>`. To specify the save path, either define an environment variable `$SAVE_PATH` or specify it with `--save_path` in the task launcher. For trial ID, if it is not specified with `--trial_id` it will try and find a `$SLURM_JOB_ID` environment variable. If you do not define an experiment name with `--name` then a random five-digit code will be generated instead.
   
 ## Script names
 
