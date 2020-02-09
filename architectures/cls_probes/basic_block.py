@@ -1,12 +1,9 @@
 import torch.nn as nn
 from torchvision.models.resnet import (BasicBlock,
                                        conv1x1)
+from .util import Flatten
 import torch
 
-
-class Flatten(nn.Module):
-    def forward(self, input):
-        return input.view(input.size(0), -1)
 
 def get_network(nf, nf2, n_classes):
     """

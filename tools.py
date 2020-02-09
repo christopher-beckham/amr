@@ -4,9 +4,12 @@ import matplotlib.pyplot as plt
 import os
 import tempfile
 import torch
+import glob
 import numpy as np
+from collections import OrderedDict
 from itertools import product
 from torch import nn
+from torch import optim
 from torchvision.utils import save_image
 from tqdm import tqdm
 from skimage.io import (imread,
@@ -37,6 +40,35 @@ def line2dict(st):
             dd[key] = val
     return dd
 
+def find_latest_pkl_in_folder(model_dir):
+    # List all the pkl files.
+    files = glob.glob("%s/*.pkl" % model_dir)
+    # Make them absolute paths.
+    files = [os.path.abspath(key) for key in files]
+    if len(files) > 0:
+        # Get creation time and use that.
+        latest_model = max(files, key=os.path.getctime)
+        print("Auto-resume mode found latest model: %s" %
+              latest_model)
+        return latest_model
+    return None
+
+def generate_name_from_args(dd, kwargs_for_name):
+    buf = {}
+    for key in dd:
+        if key in kwargs_for_name:
+            if dd[key] is None:
+                continue
+            new_name, fn_to_apply = kwargs_for_name[key]
+            new_val = fn_to_apply(dd[key])
+            if dd[key] is True:
+                new_val = ''
+            buf[new_name] = new_val
+    buf_sorted = OrderedDict(sorted(buf.items()))
+    #tags = sorted(tags.split(","))
+    name = ",".join([ "%s=%s" % (key, buf_sorted[key]) for key in buf_sorted.keys()])
+    return name
+
 def ndprint(x):
     # https://stackoverflow.com/questions/2891790/how-to-pretty-print-a-numpy-array-without-scientific-notation-and-with-given-pre
     print(['{:.2f}'.format(i) for i in x])
@@ -46,7 +78,7 @@ def binary_xent(p):
 
 def min_max_norm(v):
     return ( v - np.min(v) ) / (v.max() - v.min())
-    
+
 def count_params(module, trainable_only=True):
     """Count the number of parameters in a
     module.
@@ -102,7 +134,7 @@ def compute_fid(loader,
                 num_repeats=5):
 
     from fid_score import calculate_fid_given_imgs
-    
+
     # Collect the training set.
     train_samples = []
     gen_samples = []
@@ -160,7 +192,7 @@ def compute_fid(loader,
     print("Score between train and reconstruction: %f" % score)
     f.write("%f\n" % score)
     f.close()
-    
+
 def _extract_encodings(loader,
                        gan,
                        early_stop):
@@ -183,7 +215,7 @@ def _extract_encodings(loader,
         buf = buf.reshape(-1, np.product(enc.size()[1::]))
     y_buf = np.vstack(y_buf)
     return buf, y_buf
-    
+
 def save_embedding(loader,
                    gan,
                    save_file,
@@ -223,7 +255,7 @@ def train_logreg(loader,
         acc = (lr.predict(X) == y).mean()
         print("Accuracy: %f" % acc)
         f.write("%f\n" % acc)
-    
+
 
 def save_class_embedding(gan,
                          n_classes,
@@ -273,7 +305,7 @@ def generate_2d_plot(loader,
 
     if x_2d.shape[1] != 2:
         raise Exception("Expected bottleneck to be of shape (N, 2)!")
-    
+
     fig = plt.figure(figsize=(5, 5))
     ax = fig.add_subplot(1, 1, 1)
     ax.scatter(x_2d[:, 0], x_2d[:, 1], c=y_int)
@@ -292,7 +324,7 @@ def generate_2d_plot(loader,
             distances.append(np.sum((k_means[i] - k_means[j])**2))
     g.write("%f\n" % np.mean(distances))
     """
-    
+
 def generate_tsne(loader,
                   gan,
                   save_path,
@@ -400,7 +432,7 @@ def save_frames(gan, x_batch, out_folder, num_interps=10):
                 out_file = "%s/%i/{0:06d}.png".format(interp_idx) % (out_folder, img_idx)
                 save_image(dec_enc_mix[img_idx]*0.5 + 0.5,
                            filename=out_file,
-                           padding=0)            
+                           padding=0)
 
 
 def save_frames_continuous(gan,
@@ -492,7 +524,7 @@ def save_consistency_plot(gan, x_batch, out_folder):
     gan._eval()
     if not os.path.exists(out_folder):
         os.makedirs(out_folder)
-        
+
     with torch.no_grad():
         if type(x_batch) in [tuple, list]:
             x_batch_1, x_batch_2 = x_batch
@@ -500,7 +532,7 @@ def save_consistency_plot(gan, x_batch, out_folder):
             x_batch_1 = x_batch
             perm = torch.randperm(x_batch.size(0))
             x_batch_2 = x_batch[perm]
-            
+
         enc1 = gan.generator.encode(x_batch_1)
         enc2 = gan.generator.encode(x_batch_2)
         is_2d = True if len(enc1.size()) == 2 else False
@@ -524,7 +556,7 @@ def save_consistency_plot(gan, x_batch, out_folder):
                   width=0.002)
         fig.savefig("%s/plot.png" % out_folder)
 
-    
+
 def save_interp(gan, x_batch, out_folder, num=10, mix_input=False, padding=2, show_real=False):
     """Save interpolations between a batch and its permuted
     version to disk.
@@ -542,38 +574,30 @@ def save_interp(gan, x_batch, out_folder, num=10, mix_input=False, padding=2, sh
         os.makedirs(out_folder)
     pbuf = []
     with torch.no_grad():
-        if type(x_batch) in [tuple, list]:
-            x_batch_1, x_batch_2 = x_batch
-        else:
-            x_batch_1 = x_batch
-            perm = torch.randperm(x_batch.size(0))
-            x_batch_2 = x_batch[perm]
-        enc1 = gan.generator.encode(x_batch_1)
-        enc2 = gan.generator.encode(x_batch_2)
-        is_2d = True if len(enc1.size()) == 2 else False
+        enc = gan.generator.encode(x_batch)
+        perm = torch.randperm(x_batch.size(0))
         for p in np.linspace(0, 1, num=num):
             if mix_input:
-                alpha = gan.sampler(x_batch_1.size(0), 1, is_2d, p=p)
-                dec_enc_mix = alpha*x_batch_1 + (1.-alpha)*x_batch_2
+                #alpha = gan.sampler(x_batch.size(0), 1, is_2d, p=p)
+                #perm = torch.randperm(x_batch.size(0))
+                #dec_enc_mix = alpha*x_batch + (1.-alpha)*x_batch[perm]
+                raise Exception("todo: fix implementation")
             else:
-                alpha = gan.sampler(enc1.size(0), enc1.size(1), is_2d, p=p)
-                enc_mix = alpha*enc1 + (1.-alpha)*enc2
+                enc_mix, _ = gan.mix(enc, perm=perm, p=p)
                 dec_enc_mix = gan.generator.decode(enc_mix)
                 if show_real:
-                    if p == 0:
-                        dec_enc_mix = x_batch_2
-                    elif p == 1:
-                        dec_enc_mix = x_batch_1
+                    raise Exception("")
             pbuf.append(dec_enc_mix.detach().cpu())
-            
-    for b in range(x_batch_1.size(0)):
+
+    for b in range(x_batch.size(0)):
         this_interp = torch.stack([pbuf[i][b] for i in range(len(pbuf))])
         out_file = "%s/%i.png" % (out_folder, b)
         save_image( this_interp*0.5 + 0.5,
                     nrow=this_interp.size(0),
                     filename=out_file,
-                    padding=padding)
-        
+                    padding=padding,
+                    pad_value=0.5)
+
 def save_interp_supervised(gan, x_batch, y_batch,
                            out_folder,
                            num=10,
@@ -594,7 +618,7 @@ def save_interp_supervised(gan, x_batch, y_batch,
         for i in range(len(ys)):
             arr.append(np.random.choice(ys[i]))
         return arr
-    
+
     with torch.no_grad():
         if gan.use_cuda:
             x_batch = x_batch.cuda()
@@ -611,7 +635,7 @@ def save_interp_supervised(gan, x_batch, y_batch,
             print("  this_y1 = ", this_y1)
             print("  this_y2 = ", this_y2)
             print("  sum(this_y1) =", sum(this_y1))
-            print("  sum(this_y2) =", sum(this_y2))            
+            print("  sum(this_y2) =", sum(this_y2))
             # Produce all possible binary combinations between
             # this_y1 and this_y2.
             this_y_stacked = torch.stack((this_y1, this_y2))
@@ -692,3 +716,185 @@ def save_interp_supervised(gan, x_batch, y_batch,
                 else:
                     new_interp_img = np.hstack((new_interp_img, img_cell))
             imsave(arr=new_interp_img, fname="%s/%i_anno.png" % (out_folder, b))
+
+def dsprite_disentanglement(gan,
+                            ds,
+                            save_path,
+                            batch_size=256,
+                            num_examples=50000):
+    #print(gan)
+    #print(dataset)
+
+    gan._eval()
+
+    from sklearn.linear_model import LogisticRegression
+    from models import vae
+    is_vae = True if type(gan) == vae.VAE else False
+
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+
+
+    xs = []
+    ys = []
+    pbar = tqdm(total=num_examples)
+    for iter in range(num_examples):
+        # 1..N because 0 == colour and only has one value
+        rnd_latent_idx = np.random.randint(1, len(ds.metadata['latents_sizes']))
+        rnd_val_in_idx = np.random.randint(0, ds.metadata['latents_sizes'][rnd_latent_idx])
+        samples = ds.sample_conditional(rnd_latent_idx, rnd_val_in_idx, batch_size)
+        #print("Fixing: ", ds.metadata['latents_names'][rnd_latent_idx])
+        idcs = np.arange(0, len(samples))
+        idcs_even, idcs_odd = idcs[0::2], idcs[1::2]
+        samples_even = samples[idcs_even].unsqueeze(1)
+        samples_odd = samples[idcs_odd].unsqueeze(1)
+        if gan.use_cuda:
+            samples_even = samples_even.cuda()
+            samples_odd = samples_odd.cuda()
+        #xs, ys = [], []
+        #while len(xs) != 16:
+        with torch.no_grad():
+            enc1 = gan.generator.encode(samples_even)
+            enc2 = gan.generator.encode(samples_odd)
+            # If this is a VAE, then only extract
+            # the mean and not the variance.
+            if is_vae:
+                enc1 = enc1[:, 0:(enc1.size(1)//2)]
+                enc2 = enc2[:, 0:(enc2.size(1)//2)]
+            # NOTE: if we predict raw pixels, the accuracy is ~31%
+            #s = samples_even
+            #enc1 = samples_even.view(-1, s.size(1)*s.size(2)*s.size(3))
+            #enc2 = samples_odd.view(-1, s.size(1)*s.size(2)*s.size(3))
+            diffs = torch.mean(torch.abs(enc1-enc2), dim=0).cpu().numpy()
+            xs.append(diffs)
+            ys.append(rnd_latent_idx)
+
+        pbar.update(1)
+    xs = np.asarray(xs)
+    ys = np.asarray(ys)-1
+    print(xs.shape, ys.shape)
+
+    lm = LogisticRegression(solver='lbfgs', multi_class='multinomial', verbose=1, max_iter=100000)
+    lm.fit(xs, ys)
+    score = lm.score(xs, ys)
+    print("Accuracy for %i: %f" % (num_examples, lm.score(xs,ys)))
+    with open("%s/result.txt" % save_path, "w") as f:
+        f.write("Accuracy for %i: %f\n" % (num_examples, score))
+
+    #print(xs.shape, ys.shape)
+    #np.savez("%s/mat.npz" % save_path, xs, ys)
+
+
+
+
+def dsprite_disentanglement_fv(gen,
+                               ds,
+                               is_vae=False,
+                               save_path=None,
+                               n_votes=800,
+                               L=800,
+                               cull_dimensions=False,
+                               verbose=False,
+                               **kwargs):
+    """
+
+    Notes
+    ----- 
+
+    Quoted from the FactorVAE paper: "So in our experiments, we use
+     L = 200 and 10000 iterations, with a batch size of 10 per
+     iteration of training the linear classifier, and use a batch of
+     size 800 to evaluate the metric at the end of training."
+     Based on this, `num_examples` should be 10000, `batch_size`
+     should be 200, and the validation set (is it really needed?)
+     consists of 800 examples.
+
+    """
+
+    if cull_dimensions and not is_vae:
+        raise Exception("`cull_dimensions` only works when `is_vae` is True")
+
+    from sklearn.linear_model import LogisticRegression
+    from torch.distributions.kl import kl_divergence
+    from torch import distributions as distns
+    from collections import Counter
+
+    gen.eval()
+
+    if save_path is not None:
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+
+    n_examples_per_vote = L
+
+    n_factors = len(ds.metadata['latents_sizes']) # e.g. 6
+    n_votes_per_factor = n_votes // (n_factors-1) # e.g. 800/5 = 160
+
+    if verbose:
+        pbar = tqdm(total=n_votes_per_factor*(n_factors-1))
+
+    xs, ys = [], []
+    # Fix a value for this factor
+    if is_vae:
+        mus, sigmas = [], []
+    for k_fixed in range(1, n_factors): # ignore first latent
+        for _ in range(n_votes_per_factor):
+            rnd_val = np.random.randint(0, ds.metadata['latents_sizes'][k_fixed])
+            # Generate L examples where this factor is fixed and all others vary
+            samples = ds.sample_conditional(k_fixed, rnd_val, n_examples_per_vote)
+            samples = samples.unsqueeze(1)
+            samples = samples.cuda()
+            with torch.no_grad():
+                enc = gen.encode(samples)
+                # If this is a VAE, then only extract
+                # the mean and not the variance.
+                if is_vae:
+                    mu = enc[:, 0:(enc.size(1)//2)]
+                    sigma = enc[:, (enc.size(1)//2)::]
+                    mus.append(mu)
+                    sigmas.append(sigma)
+                    enc = mu
+                xs.append(enc.cpu().numpy())
+                ys.append(k_fixed)
+            if verbose:
+                pbar.update(1)
+    xs = np.asarray(xs)
+    ys = np.asarray(ys)-1
+    #print(xs.shape, ys.shape)
+
+    if is_vae:
+        mus = torch.cat(mus, dim=0)
+        sigmas = torch.cat(sigmas, dim=0)
+        this_distn = distns.Normal(mus, sigmas)
+        prior = distns.Normal(torch.zeros_like(mus), torch.ones_like(sigmas))
+        this_kl = kl_divergence(this_distn, prior)
+        # Cull dimensions whose kl with prior are <= 1e-2
+        if cull_dimensions:
+            xs = xs[:, :, (this_kl.mean(dim=0) > 1e-2).cpu().numpy().astype(np.bool) ]
+
+    # Get rescaled representation, over the entire
+    # corpus.
+    # xs = (num_examples, bs, 10)
+    # so compute std over (num_examples*bs, 10)
+    # to get a 10-vector
+    xs /= xs.reshape(xs.shape[0]*xs.shape[1], -1).std(axis=0, keepdims=True)
+    print("xs shape =", xs.shape)
+    xs_new = []
+    for i in range(len(xs)):
+        # Get the argmin of the latent var with lowest
+        # variance, and convert to one hot.
+        xs_new.append( np.argmin( xs[i].var(axis=0) ) )
+    xs_new = np.asarray(xs_new)
+
+    n_corrects = []
+    for j in range(ys.max()):
+        n_corrects.append( Counter(xs_new[ys == j] ).most_common()[0][1]*1.0 )
+    n_correct = np.sum(n_corrects) / len(xs_new)
+
+    #print("Train accuracy: %f" % n_correct)
+
+    if save_path is not None:
+        with open("%s/result.txt" % save_path, "w") as f:
+            f.write("Train accuracy: %f\n" % n_correct)
+
+    return {'dfv': n_correct}

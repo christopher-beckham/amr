@@ -12,11 +12,13 @@ def get_network(n_channels, **kwargs):
         'latent_width': 4,
         'depth': 16, # nfg?
         'advdepth': 16, #nfd?
-        'latent': 16, #4x4x8 = 256
+        'latent': 16, #4x4x16 = 256
     }
     scales = int(round(math.log(args['width'] // args['latent_width'], 2)))
-    gen = EncoderDecoder(scales, n_channels, args['depth'], args['latent'])
-    disc_x = Discriminator(scales, args['advdepth'], args['latent'], n_channels)
+    #gen = EncoderDecoder(scales, n_channels, args['depth'], args['latent'])
+    gen = EncoderDecoder(args['width'], args['latent_width'], n_channels, args['depth'], args['latent'])
+    #disc_x = Discriminator(scales, args['advdepth'], args['latent'], n_channels)
+    disc_x = Discriminator(args['width'], args['latent_width'], args['advdepth'], args['latent'], n_channels)
     return {
         'gen': gen,
         'disc_x': disc_x,
