@@ -33,3 +33,4 @@ Script names refer to the following:
 ## Notes
 
 - `--model=threegan` is an old class, which simply deals with the `k=3` case. The more up-to-date way of doing this would be to specify `--model=kgan` with `--k=X` (where `X` denotes the number of examples to mix between).
+- `--model=swapgan` (default) is also old, and this is the `k=2` case. Again, you could simply use `--model=kgan` and specify `--k=2`.
