@@ -32,15 +32,11 @@ from torchvision.utils import save_image
 
 # TODO: cleanup
 from models.swapgan import SwapGAN
-from models.amr_classifier import ClassifierOnly
-from models.acai_f2 import ACAIF2
 from models.acai_f3 import ACAIF3
 from models.threegan import ThreeGAN
 from models.twogan import TwoGAN
-from models.twogan_supervised import TwoGANSupervised
 from models.kgan import KGAN
 from models.vae import VAE
-from models.ae import AE
 
 from functools import partial
 from importlib import import_module
@@ -58,8 +54,6 @@ from tools import (
                    dsprite_disentanglement,
                    dsprite_disentanglement_fv)
 
-
-from models.classifier import Classifier
 
 def get_shuffled_indices(length):
     rnd_state = np.random.RandomState(0)
@@ -652,12 +646,6 @@ if __name__ == '__main__':
     if args.model == 'swapgan':
         gan_class = TwoGAN
         image_handler = image_handler_default
-    elif args.model == 'supervised':
-        gan_class = TwoGANSupervised
-        image_handler = image_handler_default
-    elif args.model == 'acaif2':
-        gan_class = ACAIF2
-        image_handler = image_handler_default
     elif args.model == 'acaif3':
         gan_class = ACAIF3
         image_handler = image_handler_default
@@ -669,15 +657,11 @@ if __name__ == '__main__':
             raise Exception("`k` must be > 0 for KGAN")
         gan_class = partial(KGAN, k=args.k)
         image_handler = image_handler_default
-    elif args.model == 'classifier':
-        gan_class = ClassifierOnly
-        image_handler = image_handler_blank
     elif args.model == 'vae':
         gan_class = VAE
         image_handler = image_handler_vae
-    elif args.model == 'ae':
-        gan_class = AE
-        image_handler = image_handler_ae
+    else:
+        raise Exception("Unknown model type")
 
     handlers = [
         image_handler(save_path=expt_dir,
@@ -701,7 +685,7 @@ if __name__ == '__main__':
         print("  # params: %i" % count_params(cls_enc))
 
     # TODO: check for BaseAE, not VAE
-    if gan_class not in [VAE, AE]:
+    if gan_class not in [VAE]:
         gan = gan_class(
             generator=gen,
             disc_x=disc_x,
