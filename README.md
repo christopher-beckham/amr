@@ -1,6 +1,8 @@
-# Adversarial mixup resynthesizers
+# Adversarial mixup resynthesis
 
 _Christopher Beckham, Sina Honari, Vikas Verma, Alex Lamb, Farnoosh Ghadiri, R Devon Hjelm, Yoshua Bengio, Christopher Pal_
+
+[[paper]](https://arxiv.org/abs/1903.02709) [[video]](https://www.youtube.com/watch?v=ezbC3_VZeNY) [[poster]](https://postersession.ai/poster/on-adversarial-mixup-resynthesis/)
 
 <img src="https://github.com/christopher-beckham/amr/raw/dev/figures/mixup_anim.gif" width=225 /> <img src="https://github.com/christopher-beckham/amr/raw/dev/figures/mixup3_anim.gif" width=225 /> <img src="https://github.com/christopher-beckham/amr/raw/dev/figures/fm_anim.gif" width=225 />
 
